@@ -1,0 +1,29 @@
+# Node / Vite
+node_modules/
+cafe-robot-ui/dist/
+cafe-robot-ui/build/
+npm-debug.log*
+
+# Arduino generated output and local tool installations
+.build/
+.arduino15/
+build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Runtime logs and recordings
+*.log
+*.264
