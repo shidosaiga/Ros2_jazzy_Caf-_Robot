@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
 ARDUINO_CLI="${ARDUINO_CLI:-${HOME}/.build/arduino-cli/arduino-cli}"
 ARDUINO_CLI_CONFIG="${ARDUINO_CLI_CONFIG:-${HOME}/.build/arduino-cli/arduino-cli.yaml}"
 ARDUINO_LIBRARY_DIR="${ARDUINO_LIBRARY_DIR:-${HOME}/Arduino/libraries}"

@@ -1,5 +1,5 @@
 #!/bin/bash
-PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
 sleep 10  # รอ Pi boot เสร็จก่อน
 
 # ค่าเริ่มต้นสำหรับ robot.service: ESP32 อยู่ที่ USB1 และ LiDAR ที่ USB0
