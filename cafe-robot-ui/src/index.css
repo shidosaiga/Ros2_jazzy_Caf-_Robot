@@ -5,6 +5,141 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: #0f1117;
+  color: #e8e6e0;
+  overflow-x: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  touch-action: manipulation;
+}
+
+.app-shell {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  overflow-x: clip;
+}
+
+.main-layout,
+.dashboard-column,
+.panel {
+  min-width: 0;
+}
+
+.connection-row input {
+  min-width: 0;
+}
+
+.map-view {
+  min-width: 0;
+  height: 340px;
+}
+
+.log-output {
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #0d0f18;
+  color: #9ca3af;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overscroll-behavior: contain;
+}
+
+.log-output > div {
+  overflow-wrap: anywhere;
+}
+
+.table-button {
+  min-width: 0;
+  touch-action: manipulation;
+}
+
+@media (max-width: 860px) {
+  .main-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 600px) {
+  .app-shell {
+    padding: 12px !important;
+  }
+
+  .app-header {
+    align-items: flex-start !important;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .connection-row {
+    flex-direction: column;
+  }
+
+  .connection-row input,
+  .connection-row button {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .connection-row input {
+    flex: none !important;
+  }
+
+  .status-bar {
+    align-items: flex-start !important;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .map-view {
+    height: 260px !important;
+  }
+
+  .panel {
+    padding: 12px !important;
+    border-radius: 10px !important;
+  }
+
+  .jog-panel button,
+  .tables-panel button,
+  .queue-panel button {
+    min-height: 44px;
+  }
+
+  .log-output {
+    max-height: 220px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 360px) {
+  .app-shell {
+    padding: 8px !important;
+  }
+
+  .map-view {
+    height: 220px !important;
+  }
 }
 
 code {

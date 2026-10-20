@@ -5,20 +5,18 @@ import * as ROSLIB from "roslib";
 // TABLE POSITIONS
 // ============================================================
 
-const TABLE_POSITIONS = {
-  1: { x: 1.0, y: 2.0, label: "โต๊ะ 1" },
-  2: { x: 2.5, y: 2.0, label: "โต๊ะ 2" },
-  3: { x: 4.0, y: 2.0, label: "โต๊ะ 3" },
-  4: { x: 1.0, y: 0.5, label: "โต๊ะ 4" },
-  5: { x: 2.5, y: 0.5, label: "โต๊ะ 5" },
-  6: { x: 4.0, y: 0.5, label: "โต๊ะ 6" },
-};
+const TABLE_IDS = [1, 2, 3, 4, 5, 6];
+const TABLE_POSITIONS_STORAGE_KEY = "cafe-robot-table-positions-v1";
 
 const HOME = {
   x: 0.0,
   y: 0.0,
   label: "Home",
 };
+
+const JOG_DURATION_MS = 1500;
+const JOG_PUBLISH_PERIOD_MS = 100;
+const JOG_STRENGTH_LEVELS = [1, 1.5, 2, 2.5];
 
 // ============================================================
 // COLORS
@@ -35,6 +33,20 @@ const COLORS = {
   text: "#e8e6e0",
   muted: "#6b7280",
 };
+
+const manualJogButtonStyle = (background, disabled) => ({
+  minHeight: 48,
+  padding: "8px 6px",
+  background,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 8,
+  color: "#fff",
+  fontSize: 13,
+  fontWeight: 600,
+  cursor: disabled ? "not-allowed" : "pointer",
+  opacity: disabled ? 0.45 : 1,
+  touchAction: "manipulation",
+});
 
 // ============================================================
 // OBJECT DETECTION COLORS
@@ -71,7 +83,14 @@ function Dot({ on }) {
 // MAP CANVAS
 // ============================================================
 
-function MapCanvas({ mapData, robotPose, goalPose }) {
+function MapCanvas({
+  mapData,
+  robotPose,
+  goalPose,
+  tables,
+  selectedTableToPlace,
+  onMapClick,
+}) {
   const canvasRef = useRef(null);
 
   // ----------------------------------------------------------
@@ -178,13 +197,28 @@ function MapCanvas({ mapData, robotPose, goalPose }) {
     ? toPixel(goalPose.x, goalPose.y)
     : null;
 
+  const handleMapClick = useCallback((event) => {
+    const canvas = canvasRef.current;
+    if (!mapData || !canvas || !onMapClick) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const normalizedX = (event.clientX - rect.left) / rect.width;
+    const normalizedY = (event.clientY - rect.top) / rect.height;
+    const x = mapData.origin.x + normalizedX * mapData.width * mapData.resolution;
+    const y = mapData.origin.y + (1 - normalizedY) * mapData.height * mapData.resolution;
+
+    onMapClick({ x, y });
+  }, [mapData, onMapClick]);
+
   return (
     <div
       style={{
         position: "relative",
         width: "100%",
         height: "100%",
+        cursor: selectedTableToPlace ? "crosshair" : "default",
       }}
+      onClick={handleMapClick}
     >
       <canvas
         ref={canvasRef}
@@ -203,7 +237,7 @@ function MapCanvas({ mapData, robotPose, goalPose }) {
       {/* TABLE MARKERS */}
       {/* ---------------------------------------------------- */}
 
-      {Object.entries(TABLE_POSITIONS).map(([id, table]) => {
+      {mapData && Object.entries(tables).map(([id, table]) => {
         const { px, py } = toPixel(table.x, table.y);
 
         return (
@@ -225,6 +259,7 @@ function MapCanvas({ mapData, robotPose, goalPose }) {
               color: "#e5e7eb",
               fontWeight: 600,
               pointerEvents: "none",
+              outline: Number(id) === selectedTableToPlace ? `2px solid ${COLORS.warn}` : "none",
             }}
           >
             {id}
@@ -437,6 +472,14 @@ export default function CafeRobotApp() {
 
   const [connected, setConnected] = useState(false);
 
+  const [jogActive, setJogActive] = useState(false);
+
+  const [jogMode, setJogMode] = useState(null);
+
+  const [jogStrength, setJogStrength] = useState(1);
+
+  const [joystickOffset, setJoystickOffset] = useState({ x: 0, y: 0 });
+
   const [robotStatus, setRobotStatus] = useState("idle");
 
   const [queue, setQueue] = useState([]);
@@ -444,6 +487,23 @@ export default function CafeRobotApp() {
   const [currentGoal, setCurrentGoal] = useState(null);
 
   const [tableStates, setTableStates] = useState({});
+
+  const [tablePositions, setTablePositions] = useState(() => {
+    try {
+      const saved = JSON.parse(
+        window.localStorage.getItem(TABLE_POSITIONS_STORAGE_KEY) || "{}"
+      );
+      return saved && typeof saved === "object" && !Array.isArray(saved)
+        ? saved
+        : {};
+    } catch {
+      return {};
+    }
+  });
+
+  const [tablePlacementMode, setTablePlacementMode] = useState(false);
+
+  const [tableToPlace, setTableToPlace] = useState(null);
 
   const [mapData, setMapData] = useState(null);
 
@@ -457,6 +517,17 @@ export default function CafeRobotApp() {
 
   const [orderCount, setOrderCount] = useState(0);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        TABLE_POSITIONS_STORAGE_KEY,
+        JSON.stringify(tablePositions)
+      );
+    } catch (error) {
+      console.warn("Could not save table positions:", error);
+    }
+  }, [tablePositions]);
+
   // ----------------------------------------------------------
   // ROS refs
   // ----------------------------------------------------------
@@ -464,6 +535,20 @@ export default function CafeRobotApp() {
   const rosRef = useRef(null);
 
   const goalPubRef = useRef(null);
+
+  const cmdVelPubRef = useRef(null);
+
+  const jogActiveRef = useRef(false);
+
+  const jogIntervalRef = useRef(null);
+
+  const jogTimeoutRef = useRef(null);
+
+  const jogCommandRef = useRef({ linearX: 0, angularZ: 0 });
+
+  const joystickPadRef = useRef(null);
+
+  const joystickPointerRef = useRef(null);
 
   const mapSubRef = useRef(null);
 
@@ -485,6 +570,176 @@ export default function CafeRobotApp() {
       ...previous.slice(0, 20),
     ]);
   }, []);
+
+  const publishTwist = useCallback((linearX, angularZ) => {
+    if (!cmdVelPubRef.current) return false;
+
+    try {
+      cmdVelPubRef.current.publish({
+        linear: { x: linearX, y: 0, z: 0 },
+        angular: { x: 0, y: 0, z: angularZ },
+      });
+      return true;
+    } catch (error) {
+      console.error("Could not publish /cmd_vel:", error);
+      return false;
+    }
+  }, []);
+
+  const stopJog = useCallback((message = "หยุดมอเตอร์แล้ว") => {
+    const wasActive = jogActiveRef.current;
+
+    if (jogIntervalRef.current !== null) {
+      window.clearInterval(jogIntervalRef.current);
+      jogIntervalRef.current = null;
+    }
+    if (jogTimeoutRef.current !== null) {
+      window.clearTimeout(jogTimeoutRef.current);
+      jogTimeoutRef.current = null;
+    }
+
+    jogActiveRef.current = false;
+    jogCommandRef.current = { linearX: 0, angularZ: 0 };
+    joystickPointerRef.current = null;
+    setJoystickOffset({ x: 0, y: 0 });
+    setJogActive(false);
+    setJogMode(null);
+
+    // Send several zero commands; the ESP32 watchdog remains the backup stop.
+    if (cmdVelPubRef.current) {
+      for (let index = 0; index < 5; index += 1) {
+        publishTwist(0, 0);
+      }
+    }
+
+    if (wasActive && message) addLog(message);
+  }, [addLog, publishTwist]);
+
+  const startTimedJog = useCallback((linearX, angularZ, label) => {
+    if (!cmdVelPubRef.current) {
+      addLog("เชื่อมต่อ ROS ก่อนจึงจะสั่งมอเตอร์ได้");
+      return;
+    }
+    if (currentGoal || robotStatus === "moving") {
+      addLog("ยกเลิกหรือจบคำสั่งนำทางก่อนใช้โหมดขับทดสอบ");
+      return;
+    }
+    if (jogActiveRef.current) return;
+
+    jogActiveRef.current = true;
+    jogCommandRef.current = { linearX, angularZ };
+    setJogActive(true);
+    setJogMode("timed");
+
+    if (!publishTwist(linearX, angularZ)) {
+      jogActiveRef.current = false;
+      setJogActive(false);
+      setJogMode(null);
+      addLog("ส่งคำสั่ง /cmd_vel ไม่สำเร็จ");
+      return;
+    }
+
+    jogIntervalRef.current = window.setInterval(() => {
+      const command = jogCommandRef.current;
+      if (!publishTwist(command.linearX, command.angularZ)) {
+        stopJog("การส่งคำสั่งขาดช่วง — ส่งคำสั่งหยุด");
+      }
+    }, JOG_PUBLISH_PERIOD_MS);
+
+    jogTimeoutRef.current = window.setTimeout(() => {
+      stopJog(`${label}: ครบ 1.5 วินาที สั่งหยุดแล้ว`);
+    }, JOG_DURATION_MS);
+
+    addLog(`${label}: เริ่มทดสอบ 1.5 วินาที`);
+  }, [addLog, currentGoal, publishTwist, robotStatus, stopJog]);
+
+  const startJoystickPublisher = useCallback(() => {
+    if (!cmdVelPubRef.current) {
+      addLog("เชื่อมต่อ ROS ก่อนจึงจะใช้ joystick ได้");
+      return false;
+    }
+    if (currentGoal || robotStatus === "moving") {
+      addLog("จบคำสั่งนำทางก่อนใช้ joystick");
+      return false;
+    }
+    if (jogActiveRef.current) return true;
+
+    jogActiveRef.current = true;
+    setJogActive(true);
+    const command = jogCommandRef.current;
+    if (!publishTwist(command.linearX, command.angularZ)) {
+      jogActiveRef.current = false;
+      setJogActive(false);
+      setJogMode(null);
+      addLog("ส่งคำสั่ง /cmd_vel ไม่สำเร็จ");
+      return false;
+    }
+
+    setJogMode("joystick");
+
+    jogIntervalRef.current = window.setInterval(() => {
+      const nextCommand = jogCommandRef.current;
+      if (!publishTwist(nextCommand.linearX, nextCommand.angularZ)) {
+        stopJog("การส่งคำสั่งขาดช่วง — ส่งคำสั่งหยุด");
+      }
+    }, JOG_PUBLISH_PERIOD_MS);
+
+    addLog("เริ่มควบคุมด้วย joystick — ปล่อยเพื่อหยุด");
+    return true;
+  }, [addLog, currentGoal, publishTwist, robotStatus, stopJog]);
+
+  const updateJoystickFromPointer = useCallback((event) => {
+    if (joystickPointerRef.current !== event.pointerId) return;
+    const pad = joystickPadRef.current;
+    if (!pad) return;
+
+    const rect = pad.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const maxTravel = Math.max(1, Math.min(rect.width, rect.height) / 2 - 28);
+    let offsetX = event.clientX - centerX;
+    let offsetY = event.clientY - centerY;
+    const distance = Math.hypot(offsetX, offsetY);
+    if (distance > maxTravel) {
+      const scale = maxTravel / distance;
+      offsetX *= scale;
+      offsetY *= scale;
+    }
+    setJoystickOffset({ x: offsetX, y: offsetY });
+
+    const normalizeAxis = (value) => {
+      const normalized = value / maxTravel;
+      const deadzone = 0.12;
+      const magnitude = Math.abs(normalized);
+      if (magnitude <= deadzone) return 0;
+      return Math.sign(normalized) * ((magnitude - deadzone) / (1 - deadzone));
+    };
+    const linearX = normalizeAxis(-offsetY) * jogStrength * 0.1;
+    // ROS angular.z is positive counter-clockwise: drag left = turn left.
+    const angularZ = -normalizeAxis(offsetX) * jogStrength;
+    jogCommandRef.current = { linearX, angularZ };
+
+    if ((linearX !== 0 || angularZ !== 0) && !jogActiveRef.current) {
+      if (!startJoystickPublisher()) {
+        joystickPointerRef.current = null;
+        setJoystickOffset({ x: 0, y: 0 });
+      }
+    }
+  }, [jogStrength, startJoystickPublisher]);
+
+  const handleJoystickPointerDown = useCallback((event) => {
+    if (!connected || currentGoal || robotStatus === "moving" || jogActiveRef.current) {
+      return;
+    }
+    joystickPointerRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateJoystickFromPointer(event);
+  }, [connected, currentGoal, robotStatus, updateJoystickFromPointer]);
+
+  const handleJoystickPointerEnd = useCallback((event) => {
+    if (joystickPointerRef.current !== event.pointerId) return;
+    stopJog("ปล่อย joystick — หยุดมอเตอร์แล้ว");
+  }, [stopJog]);
 
   // ==========================================================
   // SEND GOAL
@@ -557,7 +812,12 @@ export default function CafeRobotApp() {
 
   const startTableGoal = useCallback(
     (tableId, orderNumber = null) => {
-      const position = TABLE_POSITIONS[tableId];
+      if (jogActiveRef.current) {
+        addLog("หยุดโหมดขับทดสอบก่อนส่งเป้าหมายโต๊ะ");
+        return false;
+      }
+
+      const position = tablePositions[tableId];
 
       if (!position) {
         addLog(`ไม่พบตำแหน่งโต๊ะ ${tableId}`);
@@ -592,7 +852,7 @@ export default function CafeRobotApp() {
 
       return true;
     },
-    [addLog, sendGoalToROS]
+    [addLog, sendGoalToROS, tablePositions]
   );
 
   // ==========================================================
@@ -601,6 +861,7 @@ export default function CafeRobotApp() {
 
   const connect = useCallback(() => {
     // ปิด connection เก่าก่อน
+    stopJog(null);
     if (rosRef.current) {
       try {
         rosRef.current.close();
@@ -617,6 +878,7 @@ export default function CafeRobotApp() {
     amclPoseSubRef.current = null;
     detectionSubRef.current = null;
     goalPubRef.current = null;
+    cmdVelPubRef.current = null;
 
     const url = `ws://${ip}`;
 
@@ -648,6 +910,17 @@ export default function CafeRobotApp() {
       });
 
       addLog("Publisher /goal_pose (Nav2) พร้อม");
+
+      // Short manual test drive. The ESP32 watchdog stops motors if this
+      // publisher disappears or the browser loses its ROS connection.
+      cmdVelPubRef.current = new ROSLIB.Topic({
+        ros,
+        name: "/cmd_vel",
+        messageType: "geometry_msgs/Twist",
+        queue_size: 1,
+      });
+
+      addLog("Publisher /cmd_vel สำหรับขับทดสอบพร้อม");
 
       // ======================================================
       // MAP
@@ -780,6 +1053,11 @@ export default function CafeRobotApp() {
     ros.on("error", (error) => {
       console.error("ROS error:", error);
 
+      if (rosRef.current !== ros) return;
+
+      stopJog(null);
+      cmdVelPubRef.current = null;
+
       setConnected(false);
 
       addLog("ROS connection error");
@@ -790,9 +1068,13 @@ export default function CafeRobotApp() {
     // --------------------------------------------------------
 
     ros.on("close", () => {
+      if (rosRef.current !== ros) return;
+
+      stopJog(null);
       setConnected(false);
 
       goalPubRef.current = null;
+      cmdVelPubRef.current = null;
 
       mapSubRef.current = null;
       slamPoseSubRef.current = null;
@@ -801,13 +1083,14 @@ export default function CafeRobotApp() {
 
       addLog("ตัดการเชื่อมต่อ ROS");
     });
-  }, [addLog, ip]);
+  }, [addLog, ip, stopJog]);
 
   // ==========================================================
   // DISCONNECT
   // ==========================================================
 
   const disconnect = useCallback(() => {
+    stopJog(null);
     if (rosRef.current) {
       try {
         rosRef.current.close();
@@ -819,6 +1102,7 @@ export default function CafeRobotApp() {
     rosRef.current = null;
 
     goalPubRef.current = null;
+    cmdVelPubRef.current = null;
     mapSubRef.current = null;
     slamPoseSubRef.current = null;
     amclPoseSubRef.current = null;
@@ -827,7 +1111,25 @@ export default function CafeRobotApp() {
     setConnected(false);
 
     addLog("ตัดการเชื่อมต่อแล้ว");
-  }, [addLog]);
+  }, [addLog, stopJog]);
+
+  const placeTableOnMap = useCallback((position) => {
+    if (!tablePlacementMode || tableToPlace === null) return;
+
+    const tableId = tableToPlace;
+    const savedPosition = {
+      x: Number(position.x.toFixed(3)),
+      y: Number(position.y.toFixed(3)),
+      label: `โต๊ะ ${tableId}`,
+    };
+
+    setTablePositions((previous) => ({
+      ...previous,
+      [tableId]: savedPosition,
+    }));
+    setTableToPlace(null);
+    addLog(`กำหนดตำแหน่งโต๊ะ ${tableId} ที่ x=${savedPosition.x}, y=${savedPosition.y}`);
+  }, [addLog, tablePlacementMode, tableToPlace]);
 
   // ==========================================================
   // ADD TABLE
@@ -835,6 +1137,16 @@ export default function CafeRobotApp() {
 
   const addTable = useCallback(
     (tableId) => {
+      if (jogActiveRef.current) {
+        addLog("รอให้โหมดขับทดสอบหยุดก่อนเลือกโต๊ะ");
+        return;
+      }
+
+      if (!tablePositions[tableId]) {
+        addLog(`ยังไม่ได้กำหนดตำแหน่งโต๊ะ ${tableId} บนแผนที่`);
+        return;
+      }
+
       const currentState =
         tableStates[tableId] || "";
 
@@ -893,6 +1205,7 @@ export default function CafeRobotApp() {
       currentGoal,
       orderCount,
       startTableGoal,
+      tablePositions,
       tableStates,
     ]
   );
@@ -992,6 +1305,11 @@ export default function CafeRobotApp() {
   // ==========================================================
 
   const goHome = useCallback(() => {
+    if (jogActiveRef.current) {
+      addLog("หยุดโหมดขับทดสอบก่อนส่งเป้าหมาย Home");
+      return;
+    }
+
     // Clear queue
     setQueue([]);
 
@@ -1022,7 +1340,27 @@ export default function CafeRobotApp() {
   // ==========================================================
 
   useEffect(() => {
+    const stopWhenWindowLosesFocus = () => {
+      if (jogActiveRef.current) {
+        stopJog("หน้าเว็บเสีย focus — สั่งหยุดแล้ว");
+      }
+    };
+
+    window.addEventListener("blur", stopWhenWindowLosesFocus);
+
     return () => {
+      window.removeEventListener("blur", stopWhenWindowLosesFocus);
+
+      if (jogIntervalRef.current !== null) {
+        window.clearInterval(jogIntervalRef.current);
+      }
+      if (jogTimeoutRef.current !== null) {
+        window.clearTimeout(jogTimeoutRef.current);
+      }
+      for (let index = 0; index < 5; index += 1) {
+        publishTwist(0, 0);
+      }
+
       if (rosRef.current) {
         try {
           rosRef.current.close();
@@ -1031,7 +1369,13 @@ export default function CafeRobotApp() {
         }
       }
     };
-  }, []);
+  }, [publishTwist, stopJog]);
+
+  const jogButtonsDisabled =
+    !connected ||
+    jogActive ||
+    Boolean(currentGoal) ||
+    robotStatus === "moving";
 
   // ==========================================================
   // RENDER
@@ -1039,6 +1383,7 @@ export default function CafeRobotApp() {
 
   return (
     <div
+      className="app-shell"
       style={{
         minHeight: "100vh",
         background: COLORS.bg,
@@ -1054,6 +1399,7 @@ export default function CafeRobotApp() {
       {/* ==================================================== */}
 
       <div
+        className="app-header"
         style={{
           display: "flex",
           justifyContent: "space-between",
@@ -1092,6 +1438,7 @@ export default function CafeRobotApp() {
       {/* ==================================================== */}
 
       <div
+        className="connection-row"
         style={{
           display: "flex",
           gap: 8,
@@ -1144,6 +1491,7 @@ export default function CafeRobotApp() {
       {/* ==================================================== */}
 
       <div
+        className="status-bar"
         style={{
           background: COLORS.surface,
           border: `1px solid ${COLORS.border}`,
@@ -1193,6 +1541,7 @@ export default function CafeRobotApp() {
       {/* ==================================================== */}
 
       <div
+        className="main-layout"
         style={{
           display: "grid",
           gridTemplateColumns:
@@ -1205,6 +1554,7 @@ export default function CafeRobotApp() {
         {/* ================================================== */}
 
         <div
+          className="dashboard-column left-column"
           style={{
             display: "flex",
             flexDirection: "column",
@@ -1216,6 +1566,7 @@ export default function CafeRobotApp() {
           {/* ================================================ */}
 
           <div
+            className="panel map-panel"
             style={{
               background: COLORS.surface,
               border: `1px solid ${COLORS.border}`,
@@ -1237,6 +1588,7 @@ export default function CafeRobotApp() {
             </div>
 
             <div
+              className="map-view"
               style={{
                 height: 340,
               }}
@@ -1245,6 +1597,9 @@ export default function CafeRobotApp() {
                 mapData={mapData}
                 robotPose={robotPose}
                 goalPose={currentGoal}
+                tables={tablePositions}
+                selectedTableToPlace={tableToPlace}
+                onMapClick={placeTableOnMap}
               />
             </div>
           </div>
@@ -1254,6 +1609,7 @@ export default function CafeRobotApp() {
           {/* ================================================ */}
 
           <div
+            className="panel camera-panel"
             style={{
               background: COLORS.surface,
               border: `1px solid ${COLORS.border}`,
@@ -1306,24 +1662,13 @@ export default function CafeRobotApp() {
               detections={detections}
             />
           </div>
-        </div>
 
-        {/* ================================================== */}
-        {/* RIGHT COLUMN */}
-        {/* ================================================== */}
-
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "1rem",
-          }}
-        >
           {/* ================================================ */}
-          {/* TABLE BUTTONS */}
+          {/* LOG — stays beside the camera column */}
           {/* ================================================ */}
 
           <div
+            className="panel log-panel"
             style={{
               background: COLORS.surface,
               border: `1px solid ${COLORS.border}`,
@@ -1335,13 +1680,360 @@ export default function CafeRobotApp() {
               style={{
                 fontSize: 11,
                 color: COLORS.muted,
-                marginBottom: 10,
+                marginBottom: 8,
                 fontWeight: 500,
                 textTransform: "uppercase",
                 letterSpacing: "0.05em",
               }}
             >
-              เลือกโต๊ะ
+              Log
+            </div>
+
+            <div className="log-output">
+              {logs.map((log, index) => (
+                <div key={index}>{log}</div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* ================================================== */}
+        {/* RIGHT COLUMN */}
+        {/* ================================================== */}
+
+        <div
+          className="dashboard-column right-column"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "1rem",
+          }}
+        >
+          {/* ================================================ */}
+          {/* MANUAL JOG TEST */}
+          {/* ================================================ */}
+
+          <div
+            className="panel jog-panel"
+            style={{
+              background: COLORS.surface,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 12,
+              padding: "1rem",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                color: COLORS.muted,
+                marginBottom: 6,
+                fontWeight: 500,
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              ควบคุมทดสอบ — ไม่ใช้แผนที่
+            </div>
+
+            <div
+              style={{
+                fontSize: 12,
+                color: jogActive ? "#fbbf24" : COLORS.muted,
+                marginBottom: 12,
+              }}
+            >
+              {jogActive
+                ? jogMode === "joystick"
+                  ? "กำลังขับด้วย joystick — ปล่อยเพื่อหยุด"
+                  : "กำลังขับ — หยุดอัตโนมัติเมื่อครบ 1.5 วินาที"
+                : `เดิน/ถอยสูงสุด ${(jogStrength * 0.1).toFixed(2)} m/s · หมุน ${jogStrength.toFixed(1)} rad/s · ปุ่มวิ่ง 1.5 วินาที`}
+            </div>
+
+            <div
+              role="group"
+              aria-label="เลือกระดับความแรง"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                marginBottom: 12,
+                flexWrap: "wrap",
+              }}
+            >
+              <span style={{ fontSize: 12, color: COLORS.muted, marginRight: 2 }}>
+                แรง:
+              </span>
+              {JOG_STRENGTH_LEVELS.map((level) => {
+                const selected = jogStrength === level;
+                return (
+                  <button
+                    key={level}
+                    type="button"
+                    disabled={jogActive}
+                    aria-pressed={selected}
+                    onClick={() => setJogStrength(level)}
+                    style={{
+                      minWidth: 42,
+                      padding: "6px 9px",
+                      borderRadius: 7,
+                      border: `1px solid ${selected ? COLORS.accent : COLORS.border}`,
+                      background: selected ? COLORS.accent : "#252836",
+                      color: COLORS.text,
+                      opacity: jogActive ? 0.5 : 1,
+                      cursor: jogActive ? "not-allowed" : "pointer",
+                      fontSize: 12,
+                    }}
+                  >
+                    {level}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div
+              ref={joystickPadRef}
+              role="group"
+              aria-label="joystick เดินหน้า ถอยหลัง และหมุนซ้ายขวา"
+              onPointerDown={handleJoystickPointerDown}
+              onPointerMove={updateJoystickFromPointer}
+              onPointerUp={handleJoystickPointerEnd}
+              onPointerCancel={handleJoystickPointerEnd}
+              onLostPointerCapture={handleJoystickPointerEnd}
+              style={{
+                position: "relative",
+                width: 176,
+                height: 176,
+                maxWidth: "100%",
+                margin: "4px auto 14px",
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: "50%",
+                background: "radial-gradient(circle, #242838 0%, #171a24 72%)",
+                touchAction: "none",
+                userSelect: "none",
+                cursor: jogButtonsDisabled ? "not-allowed" : "grab",
+                opacity: connected ? 1 : 0.55,
+                overflow: "hidden",
+              }}
+            >
+              <span
+                style={{
+                  position: "absolute",
+                  top: "50%",
+                  left: 8,
+                  transform: "translateY(-50%)",
+                  color: COLORS.muted,
+                  fontSize: 11,
+                  pointerEvents: "none",
+                }}
+              >
+                ◀ ซ้าย
+              </span>
+              <span
+                style={{
+                  position: "absolute",
+                  top: "50%",
+                  right: 8,
+                  transform: "translateY(-50%)",
+                  color: COLORS.muted,
+                  fontSize: 11,
+                  pointerEvents: "none",
+                }}
+              >
+                ขวา ▶
+              </span>
+              <span
+                style={{
+                  position: "absolute",
+                  top: 10,
+                  left: 0,
+                  right: 0,
+                  textAlign: "center",
+                  color: COLORS.muted,
+                  fontSize: 11,
+                  pointerEvents: "none",
+                }}
+              >
+                ▲ หน้า
+              </span>
+              <span
+                style={{
+                  position: "absolute",
+                  bottom: 10,
+                  left: 0,
+                  right: 0,
+                  textAlign: "center",
+                  color: COLORS.muted,
+                  fontSize: 11,
+                  pointerEvents: "none",
+                }}
+              >
+                ▼ หลัง
+              </span>
+              <div
+                style={{
+                  position: "absolute",
+                  left: `calc(50% + ${joystickOffset.x}px)`,
+                  top: `calc(50% + ${joystickOffset.y}px)`,
+                  transform: "translate(-50%, -50%)",
+                  width: 48,
+                  height: 48,
+                  borderRadius: "50%",
+                  border: `2px solid ${jogActive ? COLORS.warn : COLORS.accent}`,
+                  background: jogActive ? "#3d2c05" : "#263b6a",
+                  boxShadow: "0 3px 12px rgba(0,0,0,0.4)",
+                  pointerEvents: "none",
+                }}
+              />
+            </div>
+            <div
+              style={{
+                marginBottom: 12,
+                textAlign: "center",
+                color: COLORS.muted,
+                fontSize: 11,
+              }}
+            >
+              ลากทุกทิศทางเพื่อเดินและเลี้ยว · ปล่อยเพื่อหยุด
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                gap: 8,
+                maxWidth: 300,
+                margin: "0 auto",
+              }}
+            >
+              <span />
+              <button
+                type="button"
+                disabled={jogButtonsDisabled}
+                onClick={() => startTimedJog(jogStrength * 0.1, 0, "เดินหน้า")}
+                style={manualJogButtonStyle(COLORS.accent, jogButtonsDisabled)}
+                aria-label="เดินหน้า 1.5 วินาที"
+              >
+                ▲ หน้า
+              </button>
+              <span />
+
+              <button
+                type="button"
+                disabled={jogButtonsDisabled}
+                onClick={() => startTimedJog(0, jogStrength, "หมุนซ้าย")}
+                style={manualJogButtonStyle("#2563eb", jogButtonsDisabled)}
+                aria-label="หมุนซ้าย 1.5 วินาที"
+              >
+                ◀ ซ้าย
+              </button>
+              <button
+                type="button"
+                disabled={!connected && !jogActive}
+                onClick={() => stopJog("หยุดด้วยปุ่มหยุด")}
+                style={manualJogButtonStyle(COLORS.danger, !connected && !jogActive)}
+                aria-label="หยุดมอเตอร์"
+              >
+                ■ หยุด
+              </button>
+              <button
+                type="button"
+                disabled={jogButtonsDisabled}
+                onClick={() => startTimedJog(0, -jogStrength, "หมุนขวา")}
+                style={manualJogButtonStyle("#2563eb", jogButtonsDisabled)}
+                aria-label="หมุนขวา 1.5 วินาที"
+              >
+                ขวา ▶
+              </button>
+
+              <span />
+              <button
+                type="button"
+                disabled={jogButtonsDisabled}
+                onClick={() => startTimedJog(-jogStrength * 0.1, 0, "ถอยหลัง")}
+                style={manualJogButtonStyle("#4b5563", jogButtonsDisabled)}
+                aria-label="ถอยหลัง 1.5 วินาที"
+              >
+                ▼ หลัง
+              </button>
+              <span />
+            </div>
+
+            <div
+              style={{
+                fontSize: 11,
+                color: COLORS.muted,
+                marginTop: 10,
+                lineHeight: 1.5,
+              }}
+            >
+              ใช้ทดสอบระยะสั้น ยกล้อพ้นพื้นก่อน · ซ้าย/ขวาคือหมุนอยู่กับที่ ไม่ใช่การวิ่งเฉียง
+            </div>
+          </div>
+
+          {/* ================================================ */}
+          {/* TABLE BUTTONS */}
+          {/* ================================================ */}
+
+          <div
+            className="panel tables-panel"
+            style={{
+              background: COLORS.surface,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 12,
+              padding: "1rem",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 8,
+                marginBottom: 10,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: COLORS.muted,
+                  fontWeight: 500,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                เลือกโต๊ะ
+              </div>
+              <button
+                type="button"
+                disabled={!mapData || jogActive}
+                onClick={() => {
+                  const nextMode = !tablePlacementMode;
+                  setTablePlacementMode(nextMode);
+                  setTableToPlace(null);
+                  addLog(nextMode
+                    ? "โหมดกำหนดโต๊ะ: เลือกหมายเลขโต๊ะ แล้วแตะตำแหน่งบนแผนที่"
+                    : "ยกเลิกโหมดกำหนดโต๊ะ");
+                }}
+                style={{
+                  minHeight: 40,
+                  padding: "6px 10px",
+                  border: `1px solid ${tablePlacementMode ? COLORS.warn : COLORS.border}`,
+                  borderRadius: 8,
+                  background: tablePlacementMode ? "#3d2c05" : "#252836",
+                  color: tablePlacementMode ? "#fbbf24" : COLORS.text,
+                  cursor: !mapData || jogActive ? "not-allowed" : "pointer",
+                }}
+              >
+                {tablePlacementMode ? "ยกเลิกตั้งโต๊ะ" : "กำหนดตำแหน่งบนแผนที่"}
+              </button>
+            </div>
+
+            <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 10 }}>
+              {tablePlacementMode
+                ? tableToPlace === null
+                  ? "เลือกหมายเลขโต๊ะ แล้วแตะจุดนั้นบนแผนที่"
+                  : `เลือกโต๊ะ ${tableToPlace} แล้ว — แตะตำแหน่งบนแผนที่`
+                : "โต๊ะที่ยังไม่ได้กำหนดตำแหน่งจะไม่แสดงบนแผนที่และสั่งวิ่งไม่ได้"}
             </div>
 
             <div
@@ -1352,10 +2044,10 @@ export default function CafeRobotApp() {
                 gap: 10,
               }}
             >
-              {Object.entries(
-                TABLE_POSITIONS
-              ).map(([id]) => {
-                const tableId = Number(id);
+              {TABLE_IDS.map((tableId) => {
+                const id = String(tableId);
+                const configured = Boolean(tablePositions[tableId]);
+                const selectedForPlacement = tableToPlace === tableId;
 
                 const state =
                   tableStates[tableId] || "";
@@ -1369,7 +2061,14 @@ export default function CafeRobotApp() {
                 let numberColor =
                   COLORS.text;
 
-                let statusText = "ว่าง";
+                let statusText = configured ? "ว่าง" : "ยังไม่ตั้ง";
+
+                if (selectedForPlacement) {
+                  borderColor = COLORS.warn;
+                  background = "#3d2c05";
+                  numberColor = "#fbbf24";
+                  statusText = "เลือกแล้ว";
+                }
 
                 if (state === "active") {
                   borderColor =
@@ -1416,14 +2115,22 @@ export default function CafeRobotApp() {
                 return (
                   <button
                     key={id}
-                    onClick={() =>
-                      addTable(tableId)
-                    }
+                    className="table-button"
+                    disabled={jogActive || state === "active" || state === "queued" || (!tablePlacementMode && !configured)}
+                    onClick={() => {
+                      if (tablePlacementMode) {
+                        setTableToPlace(tableId);
+                        addLog(`เลือกโต๊ะ ${tableId} — แตะตำแหน่งบนแผนที่`);
+                        return;
+                      }
+                      addTable(tableId);
+                    }}
                     style={{
                       aspectRatio: "1",
                       borderRadius: "50%",
                       border: `2px solid ${borderColor}`,
                       background,
+                      opacity: !configured && !tablePlacementMode ? 0.45 : 1,
                       cursor:
                         state === "active" ||
                         state === "queued"
@@ -1459,7 +2166,7 @@ export default function CafeRobotApp() {
                         color: COLORS.muted,
                       }}
                     >
-                      {statusText}
+                        {statusText}
                     </span>
                   </button>
                 );
@@ -1472,6 +2179,7 @@ export default function CafeRobotApp() {
           {/* ================================================ */}
 
           <div
+            className="panel queue-panel"
             style={{
               background: COLORS.surface,
               border: `1px solid ${COLORS.border}`,
@@ -1611,6 +2319,7 @@ export default function CafeRobotApp() {
             {/* HOME BUTTON */}
 
             <button
+              disabled={jogActive}
               onClick={goHome}
               style={{
                 width: "100%",
@@ -1629,50 +2338,6 @@ export default function CafeRobotApp() {
             </button>
           </div>
 
-          {/* ================================================ */}
-          {/* LOG */}
-          {/* ================================================ */}
-
-          <div
-            style={{
-              background: COLORS.surface,
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 12,
-              padding: "1rem",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 11,
-                color: COLORS.muted,
-                marginBottom: 8,
-                fontWeight: 500,
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-              }}
-            >
-              Log
-            </div>
-
-            <div
-              style={{
-                background: "#0d0f18",
-                borderRadius: 8,
-                padding: "8px 10px",
-                fontFamily: "monospace",
-                fontSize: 11,
-                color: "#6b7280",
-                maxHeight: 120,
-                overflowY: "auto",
-              }}
-            >
-              {logs.map((log, index) => (
-                <div key={index}>
-                  {log}
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
       </div>
     </div>
