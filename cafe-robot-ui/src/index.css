@@ -49,6 +49,88 @@ button {
   min-width: 0;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.system-action-button,
+.system-action-dialog-buttons button {
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid #3b4055;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.system-action-button.reboot,
+.system-action-dialog-buttons button.reboot {
+  background: #7c2d12;
+  border-color: #c2410c;
+}
+
+.system-action-button.shutdown,
+.system-action-dialog-buttons button.shutdown {
+  background: #7f1d1d;
+  border-color: #dc2626;
+}
+
+.system-action-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 72%);
+}
+
+.system-action-dialog {
+  width: min(100%, 420px);
+  padding: 20px;
+  border: 1px solid #3b4055;
+  border-radius: 14px;
+  background: #1a1d27;
+  box-shadow: 0 18px 60px rgb(0 0 0 / 45%);
+}
+
+.system-action-dialog h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.system-action-dialog p {
+  color: #b6bbc8;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.system-action-dialog .system-action-message {
+  color: #fbbf24;
+}
+
+.system-action-dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.system-action-dialog-buttons button:first-child:not(.reboot):not(.shutdown) {
+  background: #374151;
+}
+
+.system-action-dialog-buttons button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
 .map-view {
   min-width: 0;
   height: 340px;
@@ -147,6 +229,15 @@ button {
     align-items: flex-start !important;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .system-action-button {
+    min-height: 44px;
   }
 
   .connection-row {

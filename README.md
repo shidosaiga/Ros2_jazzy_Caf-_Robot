@@ -109,6 +109,27 @@ Dockerfile อยู่ใน `ros2-docker/`; ปัจจุบัน startup s
 `start_robot.sh` ยังไม่ได้เปิด Nav2; ต้องเพิ่ม Nav2, ตั้ง footprint/frames และ
 บันทึก map ก่อนจึงจะนำทางตามจุดได้
 
+## ปิดหรือรีสตาร์ต Raspberry Pi
+
+หน้าเว็บมีปุ่ม `รีสตาร์ต Pi` และ `ปิดเครื่อง` ในแถบด้านบน ทั้งสองปุ่มมีหน้าต่าง
+ยืนยันก่อนทำงาน และส่งคำสั่งหยุดมอเตอร์ก่อนเรียก systemd. เว็บคุมเครื่องผ่าน
+`robot_web_server.py` ซึ่ง `start_robot.sh` เปิดแทน Python static server เดิม
+ดังนั้น `robot.service` ต้องรันเป็น root (ค่าเริ่มต้นของ systemd หากไม่ได้กำหนด
+`User=`) และต้องเปิดเว็บจาก origin เดียวกับ Pi
+
+สั่งจาก terminal/SSH ได้เช่นกัน:
+
+```bash
+# รีสตาร์ต Pi
+sudo systemctl reboot
+
+# ปิด Pi
+sudo systemctl poweroff
+```
+
+หลังสั่งปิดเครื่อง ไฟเลี้ยงจะยังอยู่จนกว่าจะถอดแหล่งจ่ายไฟ; อย่าถอดไฟขณะกำลัง
+เขียนข้อมูลลง SD card
+
 ## IMU และ outdoor
 
 Firmware ส่ง IMU ดิบจาก MPU6500 โดยยังไม่มี orientation estimate หรือ EKF fusion

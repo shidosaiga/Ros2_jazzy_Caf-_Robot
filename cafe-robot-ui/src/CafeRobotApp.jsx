@@ -645,6 +645,12 @@ export default function CafeRobotApp() {
 
   const [orderCount, setOrderCount] = useState(0);
 
+  const [systemAction, setSystemAction] = useState(null);
+
+  const [systemActionBusy, setSystemActionBusy] = useState(false);
+
+  const [systemActionMessage, setSystemActionMessage] = useState("");
+
   useEffect(() => {
     try {
       window.localStorage.removeItem(LEGACY_TABLE_POSITIONS_STORAGE_KEY);
@@ -753,6 +759,39 @@ export default function CafeRobotApp() {
 
     if (wasActive && message) addLog(message);
   }, [addLog, publishTwist]);
+
+  const requestSystemAction = useCallback(async () => {
+    if (!systemAction || systemActionBusy) return;
+
+    const action = systemAction;
+    setSystemActionBusy(true);
+    setSystemActionMessage("กำลังส่งคำสั่งหยุดมอเตอร์…");
+    stopJog("");
+    // Give the zero Twist messages a moment to reach the ESP32 before Linux exits.
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+
+    try {
+      const response = await fetch(`/api/system/${action}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+      }
+
+      setSystemActionMessage(
+        action === "reboot"
+          ? "รับคำสั่งแล้ว Pi กำลังรีสตาร์ต หน้าเว็บจะหลุดชั่วคราว"
+          : "รับคำสั่งแล้ว Pi กำลังปิดเครื่อง หน้าเว็บจะหยุดตอบสนอง"
+      );
+      addLog(action === "reboot" ? "สั่งรีสตาร์ต Pi" : "สั่งปิด Pi");
+    } catch (error) {
+      setSystemActionBusy(false);
+      setSystemActionMessage(`สั่งงานไม่สำเร็จ: ${error.message}`);
+    }
+  }, [addLog, stopJog, systemAction, systemActionBusy]);
 
   const startTimedJog = useCallback((linearX, angularZ, label) => {
     if (!cmdVelPubRef.current) {
@@ -1626,21 +1665,42 @@ export default function CafeRobotApp() {
           🤖 Café Robot Control
         </span>
 
-        <span
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            fontSize: 13,
-            color: COLORS.muted,
-          }}
-        >
-          <Dot on={connected} />
-
-          {connected
-            ? "เชื่อมต่อแล้ว"
-            : "ไม่ได้เชื่อมต่อ"}
-        </span>
+        <div className="header-actions">
+          <span
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 13,
+              color: COLORS.muted,
+            }}
+          >
+            <Dot on={connected} />
+            {connected ? "เชื่อมต่อแล้ว" : "ไม่ได้เชื่อมต่อ"}
+          </span>
+          <button
+            type="button"
+            className="system-action-button reboot"
+            onClick={() => {
+              setSystemAction("reboot");
+              setSystemActionBusy(false);
+              setSystemActionMessage("");
+            }}
+          >
+            รีสตาร์ต Pi
+          </button>
+          <button
+            type="button"
+            className="system-action-button shutdown"
+            onClick={() => {
+              setSystemAction("shutdown");
+              setSystemActionBusy(false);
+              setSystemActionMessage("");
+            }}
+          >
+            ปิดเครื่อง
+          </button>
+        </div>
       </div>
 
       {/* ==================================================== */}
@@ -2594,6 +2654,48 @@ export default function CafeRobotApp() {
 
         </div>
       </div>
+      {systemAction && (
+        <div className="system-action-backdrop" role="presentation">
+          <section
+            className="system-action-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="system-action-title"
+          >
+            <h2 id="system-action-title">
+              {systemAction === "reboot" ? "รีสตาร์ต Raspberry Pi?" : "ปิด Raspberry Pi?"}
+            </h2>
+            <p>
+              ระบบจะส่งคำสั่งหยุดมอเตอร์ แล้ว{systemAction === "reboot" ? "รีสตาร์ต" : "ปิดเครื่อง"} Pi
+              เว็บและ ROS จะหลุดระหว่างดำเนินการ
+            </p>
+            {systemActionMessage && (
+              <p className="system-action-message" role="status">
+                {systemActionMessage}
+              </p>
+            )}
+            <div className="system-action-dialog-buttons">
+              {!systemActionBusy && (
+                <button type="button" onClick={() => setSystemAction(null)}>
+                  ยกเลิก
+                </button>
+              )}
+              <button
+                type="button"
+                className={systemAction === "reboot" ? "reboot" : "shutdown"}
+                onClick={requestSystemAction}
+                disabled={systemActionBusy}
+              >
+                {systemActionBusy
+                  ? "กำลังดำเนินการ…"
+                  : systemAction === "reboot"
+                    ? "ยืนยันรีสตาร์ต"
+                    : "ยืนยันปิดเครื่อง"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

@@ -75,8 +75,9 @@ python3 "${PROJECT_ROOT}/imx500_publisher.py" &
 # Serve the prebuilt React app. `npm start` runs the development server and
 # consumes extra CPU/RAM on the Pi; rebuild manually after changing the UI.
 if [ -d "${PROJECT_ROOT}/cafe-robot-ui/dist" ]; then
-  python3 -m http.server 3000 --bind 0.0.0.0 \
-    --directory "${PROJECT_ROOT}/cafe-robot-ui/dist" &
+  python3 "${PROJECT_ROOT}/robot_web_server.py" \
+    --directory "${PROJECT_ROOT}/cafe-robot-ui/dist" \
+    --host 0.0.0.0 --port 3000 &
 else
   echo "ไม่พบ cafe-robot-ui/dist — รัน npm run build ใน ${PROJECT_ROOT}/cafe-robot-ui ก่อน"
 fi
