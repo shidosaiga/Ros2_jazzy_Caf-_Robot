@@ -74,6 +74,64 @@ button {
   touch-action: manipulation;
 }
 
+.table-delete-button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid #ef4444;
+  border-radius: 50%;
+  background: #351b24;
+  color: #fecaca;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.table-delete-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.imu-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.imu-metric {
+  min-width: 0;
+  min-height: 62px;
+  padding: 8px 4px;
+  border-radius: 8px;
+  background: #252836;
+  text-align: center;
+}
+
+.imu-metric-label,
+.imu-metric-unit {
+  color: #6b7280;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.imu-metric-value {
+  margin: 3px 0;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.imu-note {
+  margin-top: 9px;
+  color: #6b7280;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 @media (max-width: 860px) {
   .main-layout {
     grid-template-columns: minmax(0, 1fr) !important;
@@ -115,6 +173,10 @@ button {
     height: 260px !important;
   }
 
+  .imu-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .panel {
     padding: 12px !important;
     border-radius: 10px !important;
@@ -124,6 +186,12 @@ button {
   .tables-panel button,
   .queue-panel button {
     min-height: 44px;
+  }
+
+  .table-delete-button {
+    width: 34px;
+    height: 34px;
+    min-height: 34px !important;
   }
 
   .log-output {

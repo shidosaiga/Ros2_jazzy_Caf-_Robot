@@ -6,7 +6,8 @@ import * as ROSLIB from "roslib";
 // ============================================================
 
 const TABLE_IDS = [1, 2, 3, 4, 5, 6];
-const TABLE_POSITIONS_STORAGE_KEY = "cafe-robot-table-positions-v1";
+const TABLE_POSITIONS_STORAGE_KEY = "cafe-robot-table-positions-v2";
+const LEGACY_TABLE_POSITIONS_STORAGE_KEY = "cafe-robot-table-positions-v1";
 
 const HOME = {
   x: 0.0,
@@ -16,7 +17,29 @@ const HOME = {
 
 const JOG_DURATION_MS = 1500;
 const JOG_PUBLISH_PERIOD_MS = 100;
-const JOG_STRENGTH_LEVELS = [1, 1.5, 2, 2.5];
+const JOG_STRENGTH_LEVELS = [1, 1.5, 2, 2.5, 4, 5];
+
+const quaternionToYaw = (orientation) => {
+  if (!orientation) return 0;
+  const { x = 0, y = 0, z = 0, w = 1 } = orientation;
+  return Math.atan2(
+    2 * (w * z + x * y),
+    1 - 2 * (y * y + z * z)
+  );
+};
+
+const getMapViewGeometry = (viewWidth, viewHeight, mapWidth, mapHeight) => {
+  const scale = Math.min(viewWidth / mapWidth, viewHeight / mapHeight);
+  const width = mapWidth * scale;
+  const height = mapHeight * scale;
+  return {
+    scale,
+    width,
+    height,
+    offsetX: (viewWidth - width) / 2,
+    offsetY: (viewHeight - height) / 2,
+  };
+};
 
 // ============================================================
 // COLORS
@@ -120,8 +143,8 @@ function MapCanvas({
       return;
     }
 
-    // Render at map resolution, then scale once. Drawing one rectangle per
-    // cell on the visible canvas made each map update expensive on the Pi.
+    // Render at map resolution, then scale once. OccupancyGrid rows start at
+    // the map's bottom edge; canvas rows start at the top, so reverse Y here.
     const mapCanvas = document.createElement("canvas");
     mapCanvas.width = width;
     mapCanvas.height = height;
@@ -131,7 +154,10 @@ function MapCanvas({
     const pixels = mapCtx.createImageData(width, height);
     for (let index = 0; index < width * height; index++) {
       const value = Number(data[index]);
-      const offset = index * 4;
+      const cellX = index % width;
+      const cellY = Math.floor(index / width);
+      const canvasY = height - 1 - cellY;
+      const offset = (canvasY * width + cellX) * 4;
       if (value < 0) {
         pixels.data[offset] = 30;
         pixels.data[offset + 1] = 32;
@@ -151,7 +177,8 @@ function MapCanvas({
     mapCtx.putImageData(pixels, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(mapCanvas, 0, 0, canvas.width, canvas.height);
+    const view = getMapViewGeometry(canvas.width, canvas.height, width, height);
+    ctx.drawImage(mapCanvas, view.offsetX, view.offsetY, view.width, view.height);
   }, [mapData]);
 
   // ----------------------------------------------------------
@@ -169,17 +196,18 @@ function MapCanvas({
 
       const canvas = canvasRef.current;
 
-      const scaleX = canvas.width / mapData.width;
-      const scaleY = canvas.height / mapData.height;
+      const view = getMapViewGeometry(
+        canvas.width,
+        canvas.height,
+        mapData.width,
+        mapData.height
+      );
 
-      const px =
-        ((worldX - mapData.origin.x) / mapData.resolution) *
-        scaleX;
+      const px = view.offsetX +
+        ((worldX - mapData.origin.x) / mapData.resolution) * view.scale;
 
-      const py =
-        canvas.height -
-        ((worldY - mapData.origin.y) / mapData.resolution) *
-          scaleY;
+      const py = view.offsetY + view.height -
+        ((worldY - mapData.origin.y) / mapData.resolution) * view.scale;
 
       return {
         px,
@@ -202,10 +230,20 @@ function MapCanvas({
     if (!mapData || !canvas || !onMapClick) return;
 
     const rect = canvas.getBoundingClientRect();
-    const normalizedX = (event.clientX - rect.left) / rect.width;
-    const normalizedY = (event.clientY - rect.top) / rect.height;
-    const x = mapData.origin.x + normalizedX * mapData.width * mapData.resolution;
-    const y = mapData.origin.y + (1 - normalizedY) * mapData.height * mapData.resolution;
+    const canvasX = ((event.clientX - rect.left) / rect.width) * canvas.width;
+    const canvasY = ((event.clientY - rect.top) / rect.height) * canvas.height;
+    const view = getMapViewGeometry(
+      canvas.width,
+      canvas.height,
+      mapData.width,
+      mapData.height
+    );
+    const gridX = (canvasX - view.offsetX) / view.scale;
+    const gridY = (canvasY - view.offsetY) / view.scale;
+    if (gridX < 0 || gridX > mapData.width || gridY < 0 || gridY > mapData.height) return;
+
+    const x = mapData.origin.x + gridX * mapData.resolution;
+    const y = mapData.origin.y + (mapData.height - gridY) * mapData.resolution;
 
     onMapClick({ x, y });
   }, [mapData, onMapClick]);
@@ -294,20 +332,35 @@ function MapCanvas({
 
       {robotPx && (
         <div
+          title="ตำแหน่งและทิศทางหุ่นจาก /pose หรือ /amcl_pose"
           style={{
             position: "absolute",
-            left: robotPx.px - 9,
-            top: robotPx.py - 9,
-            width: 18,
-            height: 18,
+            left: robotPx.px - 11,
+            top: robotPx.py - 11,
+            width: 22,
+            height: 22,
             borderRadius: "50%",
             background: COLORS.accent,
             border: "2px solid #fff",
             boxShadow: "0 0 10px rgba(37,99,235,0.7)",
             transition: "left 0.5s, top 0.5s",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
             pointerEvents: "none",
           }}
-        />
+        >
+          <span
+            style={{
+              color: "#fff",
+              fontSize: 12,
+              lineHeight: 1,
+              transform: `rotate(${90 - (robotPose.yaw * 180) / Math.PI}deg)`,
+            }}
+          >
+            ▲
+          </span>
+        </div>
       )}
 
       {/* ---------------------------------------------------- */}
@@ -459,6 +512,77 @@ function DetectionView({ detections }) {
   );
 }
 
+function ImuPanel({ imuData, imuFresh, imuStatusText }) {
+  const metrics = [
+    ["Accel X", imuData?.acceleration.x, "m/s²"],
+    ["Accel Y", imuData?.acceleration.y, "m/s²"],
+    ["Accel Z", imuData?.acceleration.z, "m/s²"],
+    ["Gyro X", imuData?.angularVelocity.x, "rad/s"],
+    ["Gyro Y", imuData?.angularVelocity.y, "rad/s"],
+    ["Gyro Z", imuData?.angularVelocity.z, "rad/s"],
+  ];
+
+  return (
+    <div
+      className="panel imu-panel"
+      style={{
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: 12,
+        padding: "1rem",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          marginBottom: 10,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 11,
+            color: COLORS.muted,
+            fontWeight: 500,
+            textTransform: "uppercase",
+            letterSpacing: "0.05em",
+          }}
+        >
+          IMU · /imu/data_raw
+        </div>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 11,
+            color: imuFresh ? "#4ade80" : COLORS.warn,
+          }}
+        >
+          <Dot on={imuFresh} /> {imuStatusText}
+        </span>
+      </div>
+
+      <div className="imu-metrics">
+        {metrics.map(([label, value, unit]) => (
+          <div className="imu-metric" key={label}>
+            <div className="imu-metric-label">{label}</div>
+            <div className="imu-metric-value">
+              {Number.isFinite(value) ? value.toFixed(2) : "—"}
+            </div>
+            <div className="imu-metric-unit">{unit}</div>
+          </div>
+        ))}
+      </div>
+      <div className="imu-note">
+        ค่า IMU ดิบ · ลูกศรหุ่นบนแผนที่ใช้ทิศจาก SLAM/AMCL ไม่ใช่ orientation จาก IMU
+      </div>
+    </div>
+  );
+}
+
 // ============================================================
 // MAIN APP
 // ============================================================
@@ -509,6 +633,10 @@ export default function CafeRobotApp() {
 
   const [robotPose, setRobotPose] = useState(null);
 
+  const [imuData, setImuData] = useState(null);
+
+  const [imuClock, setImuClock] = useState(Date.now());
+
   const [detections, setDetections] = useState([]);
 
   const [logs, setLogs] = useState([
@@ -519,6 +647,7 @@ export default function CafeRobotApp() {
 
   useEffect(() => {
     try {
+      window.localStorage.removeItem(LEGACY_TABLE_POSITIONS_STORAGE_KEY);
       window.localStorage.setItem(
         TABLE_POSITIONS_STORAGE_KEY,
         JSON.stringify(tablePositions)
@@ -557,6 +686,16 @@ export default function CafeRobotApp() {
   const amclPoseSubRef = useRef(null);
 
   const detectionSubRef = useRef(null);
+
+  const imuSubRef = useRef(null);
+
+  const imuLastUiUpdateRef = useRef(0);
+
+  useEffect(() => {
+    if (!connected) return undefined;
+    const timer = window.setInterval(() => setImuClock(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [connected]);
 
   // ----------------------------------------------------------
   // LOG
@@ -862,6 +1001,7 @@ export default function CafeRobotApp() {
   const connect = useCallback(() => {
     // ปิด connection เก่าก่อน
     stopJog(null);
+    setImuData(null);
     if (rosRef.current) {
       try {
         rosRef.current.close();
@@ -877,6 +1017,7 @@ export default function CafeRobotApp() {
     slamPoseSubRef.current = null;
     amclPoseSubRef.current = null;
     detectionSubRef.current = null;
+    imuSubRef.current = null;
     goalPubRef.current = null;
     cmdVelPubRef.current = null;
 
@@ -973,6 +1114,7 @@ export default function CafeRobotApp() {
         setRobotPose({
           x: Number(position.x || 0),
           y: Number(position.y || 0),
+        yaw: quaternionToYaw(message?.pose?.pose?.orientation),
         });
       };
 
@@ -995,6 +1137,40 @@ export default function CafeRobotApp() {
       amclPoseTopic.subscribe(updateMapPose);
 
       addLog("Subscribe map pose (/pose, /amcl_pose) ✓");
+
+      // ======================================================
+      // RAW IMU
+      // ======================================================
+
+      const imuTopic = new ROSLIB.Topic({
+        ros,
+        name: "/imu/data_raw",
+        messageType: "sensor_msgs/Imu",
+        queue_size: 1,
+        throttle_rate: 200,
+      });
+      imuSubRef.current = imuTopic;
+      imuTopic.subscribe((message) => {
+        const now = Date.now();
+        // Limit dashboard renders to 5 Hz even though the ESP32 publishes at 20 Hz.
+        if (now - imuLastUiUpdateRef.current < 200) return;
+        imuLastUiUpdateRef.current = now;
+        setImuData({
+          frameId: message?.header?.frame_id || "imu_link",
+          receivedAt: now,
+          acceleration: {
+            x: Number(message?.linear_acceleration?.x || 0),
+            y: Number(message?.linear_acceleration?.y || 0),
+            z: Number(message?.linear_acceleration?.z || 0),
+          },
+          angularVelocity: {
+            x: Number(message?.angular_velocity?.x || 0),
+            y: Number(message?.angular_velocity?.y || 0),
+            z: Number(message?.angular_velocity?.z || 0),
+          },
+        });
+      });
+      addLog("Subscribe /imu/data_raw ✓");
 
       // ======================================================
       // OBJECT DETECTION
@@ -1072,6 +1248,8 @@ export default function CafeRobotApp() {
 
       stopJog(null);
       setConnected(false);
+      setTablePlacementMode(false);
+      setTableToPlace(null);
 
       goalPubRef.current = null;
       cmdVelPubRef.current = null;
@@ -1080,6 +1258,7 @@ export default function CafeRobotApp() {
       slamPoseSubRef.current = null;
       amclPoseSubRef.current = null;
       detectionSubRef.current = null;
+      imuSubRef.current = null;
 
       addLog("ตัดการเชื่อมต่อ ROS");
     });
@@ -1107,8 +1286,12 @@ export default function CafeRobotApp() {
     slamPoseSubRef.current = null;
     amclPoseSubRef.current = null;
     detectionSubRef.current = null;
+    imuSubRef.current = null;
 
     setConnected(false);
+    setImuData(null);
+    setTablePlacementMode(false);
+    setTableToPlace(null);
 
     addLog("ตัดการเชื่อมต่อแล้ว");
   }, [addLog, stopJog]);
@@ -1130,6 +1313,23 @@ export default function CafeRobotApp() {
     setTableToPlace(null);
     addLog(`กำหนดตำแหน่งโต๊ะ ${tableId} ที่ x=${savedPosition.x}, y=${savedPosition.y}`);
   }, [addLog, tablePlacementMode, tableToPlace]);
+
+  const removeTablePosition = useCallback((tableId) => {
+    setTablePositions((previous) => {
+      const next = { ...previous };
+      delete next[tableId];
+      return next;
+    });
+    if (tableToPlace === tableId) setTableToPlace(null);
+    addLog(`ลบตำแหน่งโต๊ะ ${tableId} แล้ว`);
+  }, [addLog, tableToPlace]);
+
+  const clearTablePositions = useCallback(() => {
+    setTablePositions({});
+    setTableToPlace(null);
+    setTablePlacementMode(false);
+    addLog("ล้างตำแหน่งโต๊ะทั้งหมดแล้ว");
+  }, [addLog]);
 
   // ==========================================================
   // ADD TABLE
@@ -1376,6 +1576,16 @@ export default function CafeRobotApp() {
     jogActive ||
     Boolean(currentGoal) ||
     robotStatus === "moving";
+
+  const imuAgeMs = imuData ? Math.max(0, imuClock - imuData.receivedAt) : null;
+  const imuFresh = connected && imuAgeMs !== null && imuAgeMs < 1500;
+  const imuStatusText = !connected
+    ? "ยังไม่เชื่อม ROS"
+    : imuData && imuFresh
+      ? `รับข้อมูลแล้ว · ${imuData.frameId}`
+      : imuData
+        ? "ข้อมูลขาดช่วง"
+        : "รอข้อมูล IMU";
 
   // ==========================================================
   // RENDER
@@ -1662,6 +1872,12 @@ export default function CafeRobotApp() {
               detections={detections}
             />
           </div>
+
+          <ImuPanel
+            imuData={imuData}
+            imuFresh={imuFresh}
+            imuStatusText={imuStatusText}
+          />
 
           {/* ================================================ */}
           {/* LOG — stays beside the camera column */}
@@ -1966,7 +2182,7 @@ export default function CafeRobotApp() {
                 lineHeight: 1.5,
               }}
             >
-              ใช้ทดสอบระยะสั้น ยกล้อพ้นพื้นก่อน · ซ้าย/ขวาคือหมุนอยู่กับที่ ไม่ใช่การวิ่งเฉียง
+              ระดับ 4–5 แรงมาก (สูงสุด 0.40–0.50 m/s) ควรยกล้อพ้นพื้นก่อน · ปุ่มซ้าย/ขวาหมุนอยู่กับที่
             </div>
           </div>
 
@@ -2003,29 +2219,47 @@ export default function CafeRobotApp() {
               >
                 เลือกโต๊ะ
               </div>
-              <button
-                type="button"
-                disabled={!mapData || jogActive}
-                onClick={() => {
-                  const nextMode = !tablePlacementMode;
-                  setTablePlacementMode(nextMode);
-                  setTableToPlace(null);
-                  addLog(nextMode
-                    ? "โหมดกำหนดโต๊ะ: เลือกหมายเลขโต๊ะ แล้วแตะตำแหน่งบนแผนที่"
-                    : "ยกเลิกโหมดกำหนดโต๊ะ");
-                }}
-                style={{
-                  minHeight: 40,
-                  padding: "6px 10px",
-                  border: `1px solid ${tablePlacementMode ? COLORS.warn : COLORS.border}`,
-                  borderRadius: 8,
-                  background: tablePlacementMode ? "#3d2c05" : "#252836",
-                  color: tablePlacementMode ? "#fbbf24" : COLORS.text,
-                  cursor: !mapData || jogActive ? "not-allowed" : "pointer",
-                }}
-              >
-                {tablePlacementMode ? "ยกเลิกตั้งโต๊ะ" : "กำหนดตำแหน่งบนแผนที่"}
-              </button>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  disabled={!connected || !mapData || jogActive}
+                  onClick={() => {
+                    const nextMode = !tablePlacementMode;
+                    setTablePlacementMode(nextMode);
+                    setTableToPlace(null);
+                    addLog(nextMode
+                      ? "โหมดกำหนดโต๊ะ: เลือกหมายเลขโต๊ะ แล้วแตะตำแหน่งบนแผนที่"
+                      : "ยกเลิกโหมดกำหนดโต๊ะ");
+                  }}
+                  style={{
+                    minHeight: 40,
+                    padding: "6px 10px",
+                    border: `1px solid ${tablePlacementMode ? COLORS.warn : COLORS.border}`,
+                    borderRadius: 8,
+                    background: tablePlacementMode ? "#3d2c05" : "#252836",
+                    color: tablePlacementMode ? "#fbbf24" : COLORS.text,
+                    cursor: !connected || !mapData || jogActive ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {tablePlacementMode ? "ยกเลิกตั้งโต๊ะ" : "กำหนดตำแหน่งบนแผนที่"}
+                </button>
+                <button
+                  type="button"
+                  disabled={Object.keys(tablePositions).length === 0 || jogActive || Boolean(currentGoal) || queue.length > 0}
+                  onClick={clearTablePositions}
+                  style={{
+                    minHeight: 40,
+                    padding: "6px 10px",
+                    border: "1px solid #7f1d1d",
+                    borderRadius: 8,
+                    background: "#351b24",
+                    color: Object.keys(tablePositions).length === 0 ? COLORS.muted : "#fca5a5",
+                    cursor: Object.keys(tablePositions).length === 0 || jogActive || Boolean(currentGoal) || queue.length > 0 ? "not-allowed" : "pointer",
+                  }}
+                >
+                  ล้างทั้งหมด
+                </button>
+              </div>
             </div>
 
             <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 10 }}>
@@ -2033,7 +2267,13 @@ export default function CafeRobotApp() {
                 ? tableToPlace === null
                   ? "เลือกหมายเลขโต๊ะ แล้วแตะจุดนั้นบนแผนที่"
                   : `เลือกโต๊ะ ${tableToPlace} แล้ว — แตะตำแหน่งบนแผนที่`
-                : "โต๊ะที่ยังไม่ได้กำหนดตำแหน่งจะไม่แสดงบนแผนที่และสั่งวิ่งไม่ได้"}
+                : !connected
+                  ? "กดเชื่อมต่อ ROS ก่อน แล้วรอรับแผนที่ /map"
+                  : !mapData
+                    ? "เชื่อม ROS แล้ว แต่ยังไม่ได้รับ /map จึงยังวางโต๊ะไม่ได้"
+                    : jogActive
+                      ? "หยุด joystick ก่อนจึงจะกำหนดตำแหน่งโต๊ะได้"
+                  : "โต๊ะที่ยังไม่ได้กำหนดตำแหน่งจะไม่แสดงบนแผนที่และสั่งวิ่งไม่ได้"}
             </div>
 
             <div
@@ -2113,8 +2353,8 @@ export default function CafeRobotApp() {
                 }
 
                 return (
+                  <div key={id} style={{ position: "relative", minWidth: 0 }}>
                   <button
-                    key={id}
                     className="table-button"
                     disabled={jogActive || state === "active" || state === "queued" || (!tablePlacementMode && !configured)}
                     onClick={() => {
@@ -2126,6 +2366,7 @@ export default function CafeRobotApp() {
                       addTable(tableId);
                     }}
                     style={{
+                      width: "100%",
                       aspectRatio: "1",
                       borderRadius: "50%",
                       border: `2px solid ${borderColor}`,
@@ -2169,6 +2410,19 @@ export default function CafeRobotApp() {
                         {statusText}
                     </span>
                   </button>
+                  {configured && (
+                    <button
+                      type="button"
+                      className="table-delete-button"
+                      disabled={jogActive || state === "active" || state === "queued"}
+                      aria-label={`ลบตำแหน่งโต๊ะ ${id}`}
+                      title={`ลบตำแหน่งโต๊ะ ${id}`}
+                      onClick={() => removeTablePosition(tableId)}
+                    >
+                      ×
+                    </button>
+                  )}
+                  </div>
                 );
               })}
             </div>
