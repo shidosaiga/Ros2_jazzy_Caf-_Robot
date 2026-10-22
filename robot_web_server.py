@@ -25,26 +25,32 @@ class RobotWebHandler(SimpleHTTPRequestHandler):
         }
         action = actions.get(self.path)
         if action is None:
-            self.send_error(404, "Unknown endpoint")
+            self.send_json_error(404, "Unknown endpoint")
             return
 
         origin = self.headers.get("Origin")
         host = self.headers.get("Host")
         if not origin or not host or origin != f"http://{host}":
-            self.send_error(403, "Same-origin request required")
+            self.send_json_error(
+                403,
+                "Origin mismatch. Open the dashboard directly from this Pi address.",
+            )
             return
 
-        if os.geteuid() != 0:
-            self.send_error(403, "Web control server must run as root")
+        command, message = action
+        if not self.can_run_system_action(command):
+            self.send_json_error(
+                403,
+                "Power control is not authorized. Install scripts/cafe-robot-web-power.sudoers.",
+            )
             return
 
         with type(self).power_action_lock:
             if type(self).power_action_pending:
-                self.send_error(409, "A system action is already pending")
+                self.send_json_error(409, "A system action is already pending")
                 return
             type(self).power_action_pending = True
 
-        command, message = action
         payload = json.dumps({"status": message}, ensure_ascii=False).encode()
         self.send_response(202)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -57,10 +63,40 @@ class RobotWebHandler(SimpleHTTPRequestHandler):
         # Let the HTTP response reach the browser before systemd stops this server.
         threading.Timer(1.5, self.run_system_action, args=(command,)).start()
 
+    def send_json_error(self, status, message):
+        payload = json.dumps({"error": message}, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(payload)
+
+    @staticmethod
+    def systemctl_command(command):
+        systemctl = ["/usr/bin/systemctl", command]
+        if os.geteuid() == 0:
+            return systemctl
+        return ["/usr/bin/sudo", "-n", *systemctl]
+
+    @classmethod
+    def can_run_system_action(cls, command):
+        try:
+            result = subprocess.run(
+                ["/usr/bin/sudo", "-n", "-l", "/usr/bin/systemctl", command],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+                check=False,
+            ) if os.geteuid() != 0 else None
+            return result is None or result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
     @classmethod
     def run_system_action(cls, command):
         try:
-            subprocess.run(["/usr/bin/systemctl", command], check=True, timeout=15)
+            subprocess.run(cls.systemctl_command(command), check=True, timeout=15)
         except (OSError, subprocess.SubprocessError) as error:
             print(f"Could not run systemctl {command}: {error}", flush=True)
             with cls.power_action_lock:

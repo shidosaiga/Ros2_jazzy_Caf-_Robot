@@ -115,7 +115,17 @@ Dockerfile อยู่ใน `ros2-docker/`; ปัจจุบัน startup s
 ยืนยันก่อนทำงาน และส่งคำสั่งหยุดมอเตอร์ก่อนเรียก systemd. เว็บคุมเครื่องผ่าน
 `robot_web_server.py` ซึ่ง `start_robot.sh` เปิดแทน Python static server เดิม
 ดังนั้น `robot.service` ต้องรันเป็น root (ค่าเริ่มต้นของ systemd หากไม่ได้กำหนด
-`User=`) และต้องเปิดเว็บจาก origin เดียวกับ Pi
+`User=`) หรืออนุญาตคำสั่งผ่าน sudoers แบบจำกัด และต้องเปิดเว็บจาก origin เดียวกับ Pi
+
+ถ้า service ตั้ง `User=apirak` ให้ติดตั้งสิทธิ์เฉพาะ reboot/poweroff จากโฟลเดอร์
+repository:
+
+```bash
+sudo ./scripts/install_cafe_robot_web_power.sh
+```
+
+สคริปต์นี้ให้เว็บเรียกได้เพียง `systemctl reboot` และ `systemctl poweroff`.
+ห้ามเปลี่ยนเป็นสิทธิ์ sudo แบบครอบจักรวาลสำหรับ web server
 
 สั่งจาก terminal/SSH ได้เช่นกัน:
 
