@@ -166,7 +166,9 @@ static void IRAM_ATTR encL_ISR() {
 
 static void IRAM_ATTR encR_ISR() {
   portENTER_CRITICAL_ISR(&encoder_mux);
-  enc_R += (digitalRead(ENC_B_R) == HIGH) ? 1 : -1;
+  // The right encoder is mirrored relative to the left encoder. Invert its
+  // count so a forward wheel rotation is positive for both sides.
+  enc_R -= (digitalRead(ENC_B_R) == HIGH) ? 1 : -1;
   portEXIT_CRITICAL_ISR(&encoder_mux);
 }
 
