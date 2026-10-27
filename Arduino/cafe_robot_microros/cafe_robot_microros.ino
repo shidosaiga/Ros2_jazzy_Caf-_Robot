@@ -33,7 +33,7 @@
 #define WHEEL_RADIUS 0.0425f  // 85 mm wheel diameter / 2; refine under load
 #define WHEEL_BASE 0.342f     // measured wheel-hub center to center
 #define PPR 11
-#define GEAR_RATIO 30
+#define GEAR_RATIO 22  // empirically calibrated from a measured 1.20 m run
 #define TICKS_PER_REV (PPR * GEAR_RATIO)
 #define MAX_WHEEL_SPEED_MPS 0.5f
 #define CMD_TIMEOUT_MS 500
