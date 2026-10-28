@@ -31,7 +31,7 @@
 
 // Calibrate these against the actual robot before relying on odometry.
 #define WHEEL_RADIUS 0.0425f  // 85 mm wheel diameter / 2; refine under load
-#define WHEEL_BASE 0.342f     // measured wheel-hub center to center
+#define WHEEL_BASE 0.314f     // calibrated from a physical 90-degree turn
 #define PPR 11
 #define GEAR_RATIO 21  // refined from a second measured 1.20 m run
 #define TICKS_PER_REV (PPR * GEAR_RATIO)
