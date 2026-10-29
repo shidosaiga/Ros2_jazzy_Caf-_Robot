@@ -39,6 +39,8 @@
 #define CMD_TIMEOUT_MS 500
 #define PUBLISH_PERIOD_MS 50
 #define MICRO_ROS_SERIAL_BAUD 460800
+#define TIME_SYNC_PERIOD_MS 5000
+#define TIME_SYNC_TIMEOUT_MS 20
 
 static bfs::Mpu6500 imu(&Wire, bfs::Mpu6500::I2C_ADDR_PRIM);
 static bool imu_ready = false;
@@ -54,6 +56,7 @@ static float pos_y = 0.0f;
 static float pos_theta = 0.0f;
 static uint32_t last_cmd_ms = 0;
 static uint32_t last_publish_ms = 0;
+static uint32_t last_time_sync_ms = 0;
 
 static rcl_subscription_t cmd_vel_sub;
 static rcl_publisher_t odom_pub;
@@ -328,13 +331,25 @@ void setup() {
       &executor, &cmd_vel_sub, &twist_msg, cmdVelCallback, ON_NEW_DATA));
   checkRcl(rclc_executor_add_timer(&executor, &publish_timer));
 
-  // Use the Agent's synchronized clock for ROS message timestamps.
-  rmw_uros_sync_session(1000);
+  // Synchronize the epoch used by ROS message stamps with the Agent.
+  if (rmw_uros_sync_session(1000) != RMW_RET_OK ||
+      !rmw_uros_epoch_synchronized()) {
+    failStop();
+  }
   last_cmd_ms = millis();
   last_publish_ms = millis();
+  last_time_sync_ms = millis();
 }
 
 void loop() {
   rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
+  const uint32_t now_ms = millis();
+  if (static_cast<uint32_t>(now_ms - last_time_sync_ms) >=
+      TIME_SYNC_PERIOD_MS) {
+    // Retry periodically so Pi clock corrections do not leave ESP32 stamps
+    // behind. Keep the timeout short so command handling remains responsive.
+    last_time_sync_ms = now_ms;
+    (void)rmw_uros_sync_session(TIME_SYNC_TIMEOUT_MS);
+  }
   delay(5);
 }
