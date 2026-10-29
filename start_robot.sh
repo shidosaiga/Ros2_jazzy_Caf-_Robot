@@ -46,7 +46,7 @@ if [ "${USE_ESP32_ODOM:-0}" = "1" ]; then
   docker exec ros2-bridge bash -c \
     "source /opt/ros/jazzy/setup.bash && python3 /odom_to_tf.py" &
   docker exec ros2-bridge bash -c \
-    "source /opt/ros/jazzy/setup.bash && ros2 run tf2_ros static_transform_publisher --z 0.1 --frame-id base_link --child-frame-id laser_frame" &
+    "source /opt/ros/jazzy/setup.bash && ros2 run tf2_ros static_transform_publisher --x -0.175 --y 0.0 --z 0.35 --frame-id base_link --child-frame-id laser_frame" &
 else
   docker exec ros2-bridge bash -c "
   source /opt/ros/jazzy/setup.bash && \
