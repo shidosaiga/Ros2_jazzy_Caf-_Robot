@@ -7,7 +7,10 @@ USE_ESP32_ODOM="${USE_ESP32_ODOM:-1}"
 ESP32_SERIAL="${ESP32_SERIAL:-/dev/ttyUSB1}"
 LIDAR_SERIAL="${LIDAR_SERIAL:-/dev/ttyUSB0}"
 
-# เริ่ม container
+# A systemd restart does not terminate processes launched by detached
+# `docker exec` commands inside the container. Stop/start the container first
+# so a restart cannot leave duplicate LiDAR, odometry, or SLAM nodes behind.
+docker stop ros2-bridge >/dev/null 2>&1 || true
 docker start ros2-bridge
 
 sleep 5  # รอ container พร้อม
