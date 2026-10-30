@@ -685,6 +685,8 @@ export default function CafeRobotApp() {
 
   const joystickPointerRef = useRef(null);
 
+  const pressedDriveKeysRef = useRef(new Set());
+
   const mapSubRef = useRef(null);
 
   const slamPoseSubRef = useRef(null);
@@ -745,6 +747,7 @@ export default function CafeRobotApp() {
 
     jogActiveRef.current = false;
     jogCommandRef.current = { linearX: 0, angularZ: 0 };
+    pressedDriveKeysRef.current.clear();
     joystickPointerRef.current = null;
     setJoystickOffset({ x: 0, y: 0 });
     setJogActive(false);
@@ -831,7 +834,7 @@ export default function CafeRobotApp() {
     addLog(`${label}: เริ่มทดสอบ 1.5 วินาที`);
   }, [addLog, currentGoal, publishTwist, robotStatus, stopJog]);
 
-  const startJoystickPublisher = useCallback(() => {
+  const startHeldJogPublisher = useCallback((mode = "joystick") => {
     if (!cmdVelPubRef.current) {
       addLog("เชื่อมต่อ ROS ก่อนจึงจะใช้ joystick ได้");
       return false;
@@ -853,7 +856,7 @@ export default function CafeRobotApp() {
       return false;
     }
 
-    setJogMode("joystick");
+    setJogMode(mode);
 
     jogIntervalRef.current = window.setInterval(() => {
       const nextCommand = jogCommandRef.current;
@@ -862,7 +865,9 @@ export default function CafeRobotApp() {
       }
     }, JOG_PUBLISH_PERIOD_MS);
 
-    addLog("เริ่มควบคุมด้วย joystick — ปล่อยเพื่อหยุด");
+    addLog(mode === "keyboard"
+      ? "เริ่มควบคุมด้วย WASD — ปล่อยปุ่มเพื่อหยุด"
+      : "เริ่มควบคุมด้วย joystick — ปล่อยเพื่อหยุด");
     return true;
   }, [addLog, currentGoal, publishTwist, robotStatus, stopJog]);
 
@@ -898,12 +903,73 @@ export default function CafeRobotApp() {
     jogCommandRef.current = { linearX, angularZ };
 
     if ((linearX !== 0 || angularZ !== 0) && !jogActiveRef.current) {
-      if (!startJoystickPublisher()) {
+      if (!startHeldJogPublisher("joystick")) {
         joystickPointerRef.current = null;
         setJoystickOffset({ x: 0, y: 0 });
       }
     }
-  }, [jogStrength, startJoystickPublisher]);
+  }, [jogStrength, startHeldJogPublisher]);
+
+  useEffect(() => {
+    const driveKeys = new Set(["w", "a", "s", "d"]);
+    const isTextEntry = (target) => target instanceof HTMLElement && (
+      target.isContentEditable ||
+      ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+    );
+
+    const publishKeyboardCommand = () => {
+      const keys = pressedDriveKeysRef.current;
+      const linearX = ((keys.has("w") ? 1 : 0) - (keys.has("s") ? 1 : 0)) * jogStrength * 0.1;
+      // ROS angular.z is positive counter-clockwise, so A turns left.
+      const angularZ = ((keys.has("a") ? 1 : 0) - (keys.has("d") ? 1 : 0)) * jogStrength;
+      jogCommandRef.current = { linearX, angularZ };
+
+      if (linearX === 0 && angularZ === 0) {
+        if (jogActiveRef.current && jogMode === "keyboard") {
+          stopJog("ปล่อย WASD — หยุดมอเตอร์แล้ว");
+        }
+        return;
+      }
+
+      if (!connected || currentGoal || robotStatus === "moving") return;
+      if (!jogActiveRef.current) {
+        startHeldJogPublisher("keyboard");
+      } else if (jogMode === "keyboard" && !publishTwist(linearX, angularZ)) {
+        stopJog("การส่งคำสั่งขาดช่วง — ส่งคำสั่งหยุด");
+      }
+    };
+
+    const handleKeyDown = (event) => {
+      const key = event.key.toLowerCase();
+      if (event.key === "Escape") {
+        if (jogActiveRef.current) stopJog("กด Escape — สั่งหยุดแล้ว");
+        return;
+      }
+      if (!driveKeys.has(key) || event.ctrlKey || event.altKey || event.metaKey) return;
+      if (isTextEntry(event.target)) return;
+      event.preventDefault();
+      if (pressedDriveKeysRef.current.has(key)) return;
+      // Do not mix keyboard inputs with an active joystick or timed jog.
+      if (jogActiveRef.current && jogMode !== "keyboard") return;
+      pressedDriveKeysRef.current.add(key);
+      publishKeyboardCommand();
+    };
+
+    const handleKeyUp = (event) => {
+      const key = event.key.toLowerCase();
+      if (!driveKeys.has(key) || !pressedDriveKeysRef.current.has(key)) return;
+      event.preventDefault();
+      pressedDriveKeysRef.current.delete(key);
+      publishKeyboardCommand();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [connected, currentGoal, jogMode, jogStrength, publishTwist, robotStatus, startHeldJogPublisher, stopJog]);
 
   const handleJoystickPointerDown = useCallback((event) => {
     if (!connected || currentGoal || robotStatus === "moving" || jogActiveRef.current) {
@@ -1584,11 +1650,18 @@ export default function CafeRobotApp() {
         stopJog("หน้าเว็บเสีย focus — สั่งหยุดแล้ว");
       }
     };
+    const stopWhenPageIsHidden = () => {
+      if (document.visibilityState === "hidden" && jogActiveRef.current) {
+        stopJog("สลับแท็บ — สั่งหยุดแล้ว");
+      }
+    };
 
     window.addEventListener("blur", stopWhenWindowLosesFocus);
+    document.addEventListener("visibilitychange", stopWhenPageIsHidden);
 
     return () => {
       window.removeEventListener("blur", stopWhenWindowLosesFocus);
+      document.removeEventListener("visibilitychange", stopWhenPageIsHidden);
 
       if (jogIntervalRef.current !== null) {
         window.clearInterval(jogIntervalRef.current);
@@ -2019,7 +2092,9 @@ export default function CafeRobotApp() {
               }}
             >
               {jogActive
-                ? jogMode === "joystick"
+                ? jogMode === "keyboard"
+                  ? "กำลังขับด้วย WASD — ปล่อยปุ่มเพื่อหยุด"
+                  : jogMode === "joystick"
                   ? "กำลังขับด้วย joystick — ปล่อยเพื่อหยุด"
                   : "กำลังขับ — หยุดอัตโนมัติเมื่อครบ 1.5 วินาที"
                 : `เดิน/ถอยสูงสุด ${(jogStrength * 0.1).toFixed(2)} m/s · หมุน ${jogStrength.toFixed(1)} rad/s · ปุ่มวิ่ง 1.5 วินาที`}
@@ -2169,7 +2244,38 @@ export default function CafeRobotApp() {
                 fontSize: 11,
               }}
             >
-              ลากทุกทิศทางเพื่อเดินและเลี้ยว · ปล่อยเพื่อหยุด
+              ลาก joystick หรือกดค้างเพื่อขับ · ปล่อยเพื่อหยุด · Esc หยุดทันที
+              <div
+                role="group"
+                aria-label="W เดินหน้า, A หมุนซ้าย, S ถอยหลัง, D หมุนขวา"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, 32px)",
+                  justifyContent: "center",
+                  gap: 4,
+                  marginTop: 8,
+                }}
+              >
+                {[["W", "หน้า", 2, 1], ["A", "ซ้าย", 1, 2], ["S", "หลัง", 2, 2], ["D", "ขวา", 3, 2]].map(([key, direction, column, row]) => (
+                  <kbd
+                    key={key}
+                    title={`${key}: ${direction}`}
+                    style={{
+                      gridColumn: column,
+                      gridRow: row,
+                      border: `1px solid ${COLORS.border}`,
+                      borderRadius: 5,
+                      background: "#252836",
+                      color: COLORS.text,
+                      padding: "5px 0",
+                      font: "600 11px ui-monospace, monospace",
+                    }}
+                  >
+                    {key}
+                  </kbd>
+                ))}
+              </div>
+              <div style={{ marginTop: 5 }}>W หน้า · A ซ้าย · S หลัง · D ขวา</div>
             </div>
 
             <div
