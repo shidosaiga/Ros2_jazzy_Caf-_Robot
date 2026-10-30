@@ -602,6 +602,8 @@ export default function CafeRobotApp() {
 
   const [driveControlMode, setDriveControlMode] = useState("joystick");
 
+  const [wasdFocused, setWasdFocused] = useState(false);
+
   const [jogStrength, setJogStrength] = useState(1);
 
   const [joystickOffset, setJoystickOffset] = useState({ x: 0, y: 0 });
@@ -686,6 +688,8 @@ export default function CafeRobotApp() {
   const joystickPadRef = useRef(null);
 
   const joystickPointerRef = useRef(null);
+
+  const wasdFocusButtonRef = useRef(null);
 
   const pressedDriveKeysRef = useRef(new Set());
 
@@ -921,7 +925,7 @@ export default function CafeRobotApp() {
 
     const publishKeyboardCommand = () => {
       const keys = pressedDriveKeysRef.current;
-      if (driveControlMode !== "keyboard") return;
+      if (driveControlMode !== "keyboard" || !wasdFocused) return;
       const linearX = ((keys.has("w") ? 1 : 0) - (keys.has("s") ? 1 : 0)) * jogStrength * 0.1;
       // ROS angular.z is positive counter-clockwise, so A turns left.
       const angularZ = ((keys.has("a") ? 1 : 0) - (keys.has("d") ? 1 : 0)) * jogStrength;
@@ -948,7 +952,7 @@ export default function CafeRobotApp() {
         if (jogActiveRef.current) stopJog("กด Escape — สั่งหยุดแล้ว");
         return;
       }
-      if (driveControlMode !== "keyboard") return;
+      if (driveControlMode !== "keyboard" || !wasdFocused) return;
       if (!driveKeys.has(key) || event.ctrlKey || event.altKey || event.metaKey) return;
       if (isTextEntry(event.target)) return;
       event.preventDefault();
@@ -973,7 +977,7 @@ export default function CafeRobotApp() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [connected, currentGoal, driveControlMode, jogMode, jogStrength, publishTwist, robotStatus, startHeldJogPublisher, stopJog]);
+  }, [connected, currentGoal, driveControlMode, jogMode, jogStrength, publishTwist, robotStatus, startHeldJogPublisher, stopJog, wasdFocused]);
 
   const handleJoystickPointerDown = useCallback((event) => {
     if (!connected || currentGoal || robotStatus === "moving" || jogActiveRef.current) {
@@ -1650,6 +1654,7 @@ export default function CafeRobotApp() {
 
   useEffect(() => {
     const stopWhenWindowLosesFocus = () => {
+      setWasdFocused(false);
       if (jogActiveRef.current) {
         stopJog("หน้าเว็บเสีย focus — สั่งหยุดแล้ว");
       }
@@ -2164,6 +2169,7 @@ export default function CafeRobotApp() {
                     onClick={() => {
                       if (selected) return;
                       if (jogActiveRef.current) stopJog("เปลี่ยนโหมดควบคุม — หยุดแล้ว");
+                      setWasdFocused(false);
                       setDriveControlMode(mode);
                     }}
                     style={{
@@ -2307,6 +2313,31 @@ export default function CafeRobotApp() {
                 }}
               >
                 <div>กดค้างเพื่อขับ · ปล่อยเพื่อหยุด · Esc หยุดทันที</div>
+                <button
+                  ref={wasdFocusButtonRef}
+                  type="button"
+                  onFocus={() => setWasdFocused(true)}
+                  onBlur={() => {
+                    setWasdFocused(false);
+                    if (jogActiveRef.current && jogMode === "keyboard") {
+                      stopJog("โฟกัส WASD หลุด — สั่งหยุดแล้ว");
+                    }
+                  }}
+                  onClick={() => wasdFocusButtonRef.current?.focus()}
+                  style={{
+                    minWidth: 220,
+                    padding: "10px 16px",
+                    borderRadius: 8,
+                    border: `1px solid ${wasdFocused ? COLORS.success : COLORS.border}`,
+                    background: wasdFocused ? "#164e3b" : "#252836",
+                    color: COLORS.text,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {wasdFocused ? "✓ โฟกัส WASD แล้ว" : "คลิกเพื่อโฟกัส WASD"}
+                </button>
                 <div
                   role="group"
                   aria-label="W เดินหน้า, A หมุนซ้าย, S ถอยหลัง, D หมุนขวา"
