@@ -27,7 +27,8 @@ slam_toolbox:
     debug_logging: false
     throttle_scans: 1
     transform_publish_period: 0.02 #if 0 never publishes odometry
-    map_update_interval: 5.0
+    # Publish a fresh occupancy grid often enough to see walls appear while driving.
+    map_update_interval: 1.0
     resolution: 0.05
     restamp_tf: false
     min_laser_range: 0.0 #for rastering images
@@ -41,8 +42,9 @@ slam_toolbox:
     # General Parameters
     use_scan_matching: true
     use_scan_barycenter: true
-    minimum_travel_distance: 0.5
-    minimum_travel_heading: 0.5
+    # Add scans more frequently for a small indoor robot moving at low speed.
+    minimum_travel_distance: 0.2
+    minimum_travel_heading: 0.2
     check_min_dist_and_heading_precisely: false
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0
