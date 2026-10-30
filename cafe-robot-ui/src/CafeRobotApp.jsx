@@ -600,6 +600,8 @@ export default function CafeRobotApp() {
 
   const [jogMode, setJogMode] = useState(null);
 
+  const [driveControlMode, setDriveControlMode] = useState("joystick");
+
   const [jogStrength, setJogStrength] = useState(1);
 
   const [joystickOffset, setJoystickOffset] = useState({ x: 0, y: 0 });
@@ -919,6 +921,7 @@ export default function CafeRobotApp() {
 
     const publishKeyboardCommand = () => {
       const keys = pressedDriveKeysRef.current;
+      if (driveControlMode !== "keyboard") return;
       const linearX = ((keys.has("w") ? 1 : 0) - (keys.has("s") ? 1 : 0)) * jogStrength * 0.1;
       // ROS angular.z is positive counter-clockwise, so A turns left.
       const angularZ = ((keys.has("a") ? 1 : 0) - (keys.has("d") ? 1 : 0)) * jogStrength;
@@ -945,6 +948,7 @@ export default function CafeRobotApp() {
         if (jogActiveRef.current) stopJog("กด Escape — สั่งหยุดแล้ว");
         return;
       }
+      if (driveControlMode !== "keyboard") return;
       if (!driveKeys.has(key) || event.ctrlKey || event.altKey || event.metaKey) return;
       if (isTextEntry(event.target)) return;
       event.preventDefault();
@@ -969,7 +973,7 @@ export default function CafeRobotApp() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [connected, currentGoal, jogMode, jogStrength, publishTwist, robotStatus, startHeldJogPublisher, stopJog]);
+  }, [connected, currentGoal, driveControlMode, jogMode, jogStrength, publishTwist, robotStatus, startHeldJogPublisher, stopJog]);
 
   const handleJoystickPointerDown = useCallback((event) => {
     if (!connected || currentGoal || robotStatus === "moving" || jogActiveRef.current) {
@@ -2142,6 +2146,47 @@ export default function CafeRobotApp() {
             </div>
 
             <div
+              role="group"
+              aria-label="เลือกโหมดควบคุม"
+              style={{
+                display: "flex",
+                gap: 8,
+                marginBottom: 12,
+              }}
+            >
+              {[["joystick", "Joystick"], ["keyboard", "WASD"]].map(([mode, label]) => {
+                const selected = driveControlMode === mode;
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => {
+                      if (selected) return;
+                      if (jogActiveRef.current) stopJog("เปลี่ยนโหมดควบคุม — หยุดแล้ว");
+                      setDriveControlMode(mode);
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: "8px 12px",
+                      borderRadius: 7,
+                      border: `1px solid ${selected ? COLORS.accent : COLORS.border}`,
+                      background: selected ? COLORS.accent : "#252836",
+                      color: COLORS.text,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {driveControlMode === "joystick" ? (
+              <>
+            <div
               ref={joystickPadRef}
               role="group"
               aria-label="joystick เดินหน้า ถอยหลัง และหมุนซ้ายขวา"
@@ -2244,39 +2289,58 @@ export default function CafeRobotApp() {
                 fontSize: 11,
               }}
             >
-              ลาก joystick หรือกดค้างเพื่อขับ · ปล่อยเพื่อหยุด · Esc หยุดทันที
+              ลาก joystick เพื่อเดินและเลี้ยว · ปล่อยเพื่อหยุด · Esc หยุดทันที
+            </div>
+              </>
+            ) : (
               <div
-                role="group"
-                aria-label="W เดินหน้า, A หมุนซ้าย, S ถอยหลัง, D หมุนขวา"
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(3, 32px)",
+                  minHeight: 220,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
                   justifyContent: "center",
-                  gap: 4,
-                  marginTop: 8,
+                  gap: 10,
+                  marginBottom: 12,
+                  color: COLORS.muted,
+                  fontSize: 12,
                 }}
               >
-                {[["W", "หน้า", 2, 1], ["A", "ซ้าย", 1, 2], ["S", "หลัง", 2, 2], ["D", "ขวา", 3, 2]].map(([key, direction, column, row]) => (
-                  <kbd
-                    key={key}
-                    title={`${key}: ${direction}`}
-                    style={{
-                      gridColumn: column,
-                      gridRow: row,
-                      border: `1px solid ${COLORS.border}`,
-                      borderRadius: 5,
-                      background: "#252836",
-                      color: COLORS.text,
-                      padding: "5px 0",
-                      font: "600 11px ui-monospace, monospace",
-                    }}
-                  >
-                    {key}
-                  </kbd>
-                ))}
+                <div>กดค้างเพื่อขับ · ปล่อยเพื่อหยุด · Esc หยุดทันที</div>
+                <div
+                  role="group"
+                  aria-label="W เดินหน้า, A หมุนซ้าย, S ถอยหลัง, D หมุนขวา"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, 42px)",
+                    gridTemplateRows: "repeat(2, 42px)",
+                    justifyContent: "center",
+                    gap: 6,
+                  }}
+                >
+                  {[["W", "หน้า", 2, 1], ["A", "ซ้าย", 1, 2], ["S", "หลัง", 2, 2], ["D", "ขวา", 3, 2]].map(([key, direction, column, row]) => (
+                    <kbd
+                      key={key}
+                      title={`${key}: ${direction}`}
+                      style={{
+                        gridColumn: column,
+                        gridRow: row,
+                        display: "grid",
+                        placeItems: "center",
+                        border: `1px solid ${COLORS.border}`,
+                        borderRadius: 6,
+                        background: "#252836",
+                        color: COLORS.text,
+                        font: "600 14px ui-monospace, monospace",
+                      }}
+                    >
+                      {key}
+                    </kbd>
+                  ))}
+                </div>
+                <div>W หน้า · A ซ้าย · S หลัง · D ขวา</div>
               </div>
-              <div style={{ marginTop: 5 }}>W หน้า · A ซ้าย · S หลัง · D ขวา</div>
-            </div>
+            )}
 
             <div
               style={{
