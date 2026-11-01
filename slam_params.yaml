@@ -32,8 +32,9 @@ slam_toolbox:
     resolution: 0.05
     restamp_tf: false
     min_laser_range: 0.0 #for rastering images
-    max_laser_range: 20.0 #for rastering images
-    minimum_time_interval: 0.5
+    # Ignore distant returns that are unreliable in the cluttered test room.
+    max_laser_range: 8.0
+    minimum_time_interval: 0.2
     transform_timeout: 0.2
     tf_buffer_duration: 30.0
     stack_size_to_use: 40000000 #// program needs a larger stack size to serialize large maps
@@ -42,9 +43,9 @@ slam_toolbox:
     # General Parameters
     use_scan_matching: true
     use_scan_barycenter: true
-    # Add scans more frequently for a small indoor robot moving at low speed.
-    minimum_travel_distance: 0.2
-    minimum_travel_heading: 0.2
+    # Add scans more frequently so short walls and corners are not skipped.
+    minimum_travel_distance: 0.1
+    minimum_travel_heading: 0.1
     check_min_dist_and_heading_precisely: false
     scan_buffer_size: 10
     scan_buffer_maximum_scan_distance: 10.0

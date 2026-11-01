@@ -21,7 +21,10 @@ class FakeOdom(Node):
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = 'base_link'
         t.child_frame_id = 'laser_frame'
-        t.transform.translation.z = 0.1
+        # Match the measured LiDAR pose used by the real robot: 17.5 cm
+        # ahead of the drive axle and 35 cm above the floor.
+        t.transform.translation.x = 0.175
+        t.transform.translation.z = 0.35
         t.transform.rotation.w = 1.0
         self.static_br.sendTransform(t)
         self.get_logger().info('Published static TF: base_link -> laser_frame')
