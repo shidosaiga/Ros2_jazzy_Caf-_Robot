@@ -38,6 +38,17 @@
 #define MAX_WHEEL_SPEED_MPS 0.5f
 #define CMD_TIMEOUT_MS 500
 #define PUBLISH_PERIOD_MS 50
+#define WHEEL_PID_KP 180.0f      // PWM per m/s of wheel-speed error
+#define WHEEL_PID_KI 70.0f       // PWM per (m/s * second)
+#define WHEEL_PID_I_LIMIT 0.5f   // seconds of accumulated speed error
+#define HEADING_HOLD_KP 1.5f     // rad/s per radian of heading error
+#define HEADING_HOLD_KD 0.18f    // rad/s per rad/s of filtered gyro rate
+#define HEADING_HOLD_MAX_RADPS 0.22f
+#define HEADING_HOLD_DEADBAND_RAD 0.0087f  // about 0.5 degree
+#define GYRO_RATE_FILTER_TAU_S 0.08f
+#define WHEEL_SPEED_FILTER_TAU_S 0.075f
+#define IMU_GYRO_Z_SIGN -1.0f  // Hand-rotation check: MPU Z is opposite base_link +Z
+#define IMU_GYRO_CAL_SAMPLES 200
 #define MICRO_ROS_SERIAL_BAUD 460800
 #define TIME_SYNC_PERIOD_MS 5000
 #define TIME_SYNC_TIMEOUT_MS 20
@@ -54,8 +65,23 @@ static int32_t prev_enc_R = 0;
 static float pos_x = 0.0f;
 static float pos_y = 0.0f;
 static float pos_theta = 0.0f;
+static float imu_gyro_bias_z = 0.0f;
+static float imu_yaw = 0.0f;
+static float imu_yaw_target = 0.0f;
+static float imu_gyro_z_corrected = 0.0f;
+static float imu_gyro_z_filtered = 0.0f;
+static float target_linear = 0.0f;
+static float target_angular = 0.0f;
+static float target_vL = 0.0f;
+static float target_vR = 0.0f;
+static float wheel_iL = 0.0f;
+static float wheel_iR = 0.0f;
+static float filtered_vL = 0.0f;
+static float filtered_vR = 0.0f;
+static bool heading_hold_active = false;
 static uint32_t last_cmd_ms = 0;
 static uint32_t last_publish_ms = 0;
+static uint32_t last_imu_update_ms = 0;
 static uint32_t last_time_sync_ms = 0;
 
 static rcl_subscription_t cmd_vel_sub;
@@ -181,20 +207,53 @@ static void cmdVelCallback(const void *msgin) {
   const float linear = static_cast<float>(msg->linear.x);
   const float angular = static_cast<float>(msg->angular.z);
 
-  float vL = linear - angular * WHEEL_BASE * 0.5f;
-  float vR = linear + angular * WHEEL_BASE * 0.5f;
-  const float largest = fmaxf(fabsf(vL), fabsf(vR));
-  if (largest > MAX_WHEEL_SPEED_MPS) {
-    const float scale = MAX_WHEEL_SPEED_MPS / largest;
-    vL *= scale;
-    vR *= scale;
+  target_linear = constrain(linear, -MAX_WHEEL_SPEED_MPS, MAX_WHEEL_SPEED_MPS);
+  target_angular = constrain(angular, -2.0f, 2.0f);
+
+  const bool imu_fresh = last_imu_update_ms != 0 &&
+      static_cast<uint32_t>(millis() - last_imu_update_ms) < 250;
+  const bool should_hold_heading = imu_ready && imu_fresh &&
+                                  fabsf(target_linear) > 0.03f &&
+                                  fabsf(target_angular) < 0.01f;
+  if (should_hold_heading && !heading_hold_active) {
+    imu_yaw_target = imu_yaw;
+  }
+  heading_hold_active = should_hold_heading;
+  if (fabsf(target_linear) < 0.01f && fabsf(target_angular) < 0.01f) {
+    wheel_iL = 0.0f;
+    wheel_iR = 0.0f;
   }
 
-  const int pwmL = static_cast<int>(vL / MAX_WHEEL_SPEED_MPS * 255.0f);
-  const int pwmR = static_cast<int>(vR / MAX_WHEEL_SPEED_MPS * 255.0f);
-  setMotorL(pwmL);
-  setMotorR(pwmR);
   last_cmd_ms = millis();
+}
+
+static float wrapAngle(float angle) {
+  while (angle > PI) angle -= 2.0f * PI;
+  while (angle < -PI) angle += 2.0f * PI;
+  return angle;
+}
+
+static int wheelSpeedToPwm(float target, float measured, float *integral, float dt) {
+  if (fabsf(target) < 0.01f) {
+    *integral = 0.0f;
+    return 0;
+  }
+  const float error = target - measured;
+  const float feedforward = target / MAX_WHEEL_SPEED_MPS * 255.0f;
+  const float proportional = feedforward + WHEEL_PID_KP * error;
+
+  // Conditional integration prevents a saturated motor from winding up and
+  // then surging when it leaves the PWM limit.
+  const float candidate_i = constrain(*integral + error * dt,
+                                      -WHEEL_PID_I_LIMIT, WHEEL_PID_I_LIMIT);
+  const float candidate_output = proportional + WHEEL_PID_KI * candidate_i;
+  if ((candidate_output <= 255.0f && candidate_output >= -255.0f) ||
+      (candidate_output > 255.0f && error < 0.0f) ||
+      (candidate_output < -255.0f && error > 0.0f)) {
+    *integral = candidate_i;
+  }
+  const float output = proportional + WHEEL_PID_KI * *integral;
+  return static_cast<int>(constrain(output, -255.0f, 255.0f));
 }
 
 static void publishTimerCallback(rcl_timer_t *timer, int64_t last_call_time) {
@@ -222,6 +281,11 @@ static void publishTimerCallback(rcl_timer_t *timer, int64_t last_call_time) {
       (2.0f * PI * WHEEL_RADIUS) / static_cast<float>(TICKS_PER_REV);
   const float distL = static_cast<float>(dL) * meters_per_tick;
   const float distR = static_cast<float>(dR) * meters_per_tick;
+  const float measured_vL = distL / dt;
+  const float measured_vR = distR / dt;
+  const float wheel_filter_alpha = dt / (WHEEL_SPEED_FILTER_TAU_S + dt);
+  filtered_vL += wheel_filter_alpha * (measured_vL - filtered_vL);
+  filtered_vR += wheel_filter_alpha * (measured_vR - filtered_vR);
   const float dist = (distL + distR) * 0.5f;
   const float dTheta = (distR - distL) / WHEEL_BASE;
 
@@ -247,6 +311,22 @@ static void publishTimerCallback(rcl_timer_t *timer, int64_t last_call_time) {
   }
 
   if (imu_ready && imu.Read()) {
+    // Convert the mounted MPU6500's Z direction into base_link/ROS +Z.
+    imu_gyro_z_corrected =
+        (imu.gyro_z_radps() - imu_gyro_bias_z) * IMU_GYRO_Z_SIGN;
+    float imu_dt = dt;
+    if (last_imu_update_ms != 0) {
+      imu_dt = (now_ms - last_imu_update_ms) / 1000.0f;
+    }
+    last_imu_update_ms = now_ms;
+    if (imu_dt > 0.0f && imu_dt < 0.25f) {
+      imu_yaw = wrapAngle(imu_yaw + imu_gyro_z_corrected * imu_dt);
+    }
+    const float filter_alpha = imu_dt > 0.0f
+        ? imu_dt / (GYRO_RATE_FILTER_TAU_S + imu_dt)
+        : 1.0f;
+    imu_gyro_z_filtered += filter_alpha *
+        (imu_gyro_z_corrected - imu_gyro_z_filtered);
     setRosStamp(&imu_msg.header.stamp);
     imu_msg.linear_acceleration.x = imu.accel_x_mps2();
     imu_msg.linear_acceleration.y = imu.accel_y_mps2();
@@ -259,10 +339,38 @@ static void publishTimerCallback(rcl_timer_t *timer, int64_t last_call_time) {
     }
   }
 
-  // Stop if the ROS command stream disappears; motors start stopped.
+  // Fail safe if ROS stops sending commands; never keep a stale PID setpoint.
   if (static_cast<uint32_t>(now_ms - last_cmd_ms) > CMD_TIMEOUT_MS) {
+    target_linear = 0.0f;
+    target_angular = 0.0f;
+    heading_hold_active = false;
+    wheel_iL = 0.0f;
+    wheel_iR = 0.0f;
     stopMotors();
+    return;
   }
+
+  float corrected_angular = target_angular;
+  if (heading_hold_active) {
+    float heading_error = wrapAngle(imu_yaw_target - imu_yaw);
+    if (fabsf(heading_error) < HEADING_HOLD_DEADBAND_RAD) {
+      heading_error = 0.0f;
+    }
+    const float correction = constrain(
+        HEADING_HOLD_KP * heading_error - HEADING_HOLD_KD * imu_gyro_z_filtered,
+        -HEADING_HOLD_MAX_RADPS, HEADING_HOLD_MAX_RADPS);
+    corrected_angular += correction;
+  }
+  target_vL = target_linear - corrected_angular * WHEEL_BASE * 0.5f;
+  target_vR = target_linear + corrected_angular * WHEEL_BASE * 0.5f;
+  const float largest = fmaxf(fabsf(target_vL), fabsf(target_vR));
+  if (largest > MAX_WHEEL_SPEED_MPS) {
+    const float scale = MAX_WHEEL_SPEED_MPS / largest;
+    target_vL *= scale;
+    target_vR *= scale;
+  }
+  setMotorL(wheelSpeedToPwm(target_vL, filtered_vL, &wheel_iL, dt));
+  setMotorR(wheelSpeedToPwm(target_vR, filtered_vR, &wheel_iR, dt));
 }
 
 void setup() {
@@ -282,6 +390,23 @@ void setup() {
   Wire.begin(IMU_SDA, IMU_SCL);
   Wire.setClock(400000);
   imu_ready = imu.Begin();
+  if (imu_ready) {
+    // Keep the chassis still during boot so gyro bias can be measured once.
+    float bias_sum = 0.0f;
+    int valid_samples = 0;
+    for (int i = 0; i < IMU_GYRO_CAL_SAMPLES; ++i) {
+      if (imu.Read()) {
+        bias_sum += imu.gyro_z_radps();
+        ++valid_samples;
+      }
+      delay(5);
+    }
+    if (valid_samples > IMU_GYRO_CAL_SAMPLES / 2) {
+      imu_gyro_bias_z = bias_sum / static_cast<float>(valid_samples);
+    } else {
+      imu_ready = false;
+    }
+  }
 
   // micro-ROS uses USB Serial for its transport; avoid Serial debug output.
   set_microros_transports();
